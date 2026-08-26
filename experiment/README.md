@@ -10,17 +10,19 @@ the full exhaustive 45-pair gate sweep (`config.rtx5090()` profile).
 bash experiment/run_rtx5090_poc.sh
 ```
 
-Assumes `conda` is on PATH and a conda env named `autoeval` exists (create
-it first with `conda create -n autoeval python=3.11` if not — the script
-installs everything else into it: torch/cuda, numpy, scipy, ftfy, regex,
-etc.).
+Assumes `conda` is on PATH and a conda env named `autoeval` **already has
+everything installed** — torch+CUDA (RTX 5090/Blackwell needs CUDA >=12.8
+wheels), numpy, scipy, pillow, matplotlib, ftfy, regex, omegaconf, click,
+tqdm, pandas, pyarrow (see `requirements.txt`). **This script does not
+install or modify any packages** — it only checks the env has what it
+needs and fails fast with a clear list of anything missing, so you can
+install exactly that yourself.
 
 ## What it does, in order
 
-1. Activates `autoeval`, installs torch (CUDA 12.8 wheels by default — RTX
-   5090 is Blackwell, needs a recent-enough CUDA build; override via
-   `TORCH_INDEX_URL=... bash ...` if that index is wrong by the time this
-   runs) and the rest of the dependencies.
+1. Activates `autoeval`, checks (does not install) that torch+CUDA and the
+   rest of the dependencies are present — exits with a clear missing-package
+   list if not.
 2. `scripts/setup_references.sh` — clones the 7 pinned reference repos.
 3. `scripts/download_edm_checkpoint.py` — both EDM checkpoints (conditional
    + unconditional; see that script's docstring for why we need both).
@@ -52,7 +54,6 @@ etc.).
 | `VIT_EPOCHS` | `120` | ViT needs more epochs than ResNet to converge from scratch |
 | `BATCH_SIZE` | `256` | bump further if VRAM allows |
 | `GATE_PROFILE` | `rtx5090` | can point at `local_poc`/`local_smoke` too, e.g. to re-verify the pipeline before committing to the full run |
-| `TORCH_INDEX_URL` | `https://download.pytorch.org/whl/cu128` | |
 
 ## Notes
 

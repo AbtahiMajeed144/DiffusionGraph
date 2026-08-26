@@ -7,12 +7,15 @@
 # Usage (from repo root, or anywhere -- the script locates itself):
 #   bash experiment/run_rtx5090_poc.sh
 #
-# Assumes: conda is on PATH, and a conda env named `autoeval` exists (create
-# it first with `conda create -n autoeval python=3.11` if it doesn't -- this
-# script installs everything else into it). Everything below is idempotent:
-# re-running after an interruption skips whatever's already done (downloads
-# check file existence; only the evaluator training step always re-runs, by
-# design -- see TRAIN_* vars below to skip stages manually).
+# Assumes: conda is on PATH, and a conda env named `autoeval` already exists
+# with everything it needs installed (torch+CUDA for RTX 5090/Blackwell,
+# numpy, scipy, pillow, matplotlib, ftfy, regex, omegaconf, click, tqdm,
+# pandas, pyarrow -- see requirements.txt). This script does NOT install or
+# modify packages -- it only CHECKS that env for the required imports and
+# fails fast with a clear list of what's missing, so you can install exactly
+# that yourself. Everything else below is idempotent: re-running after an
+# interruption skips whatever's already done (downloads check file
+# existence; only the evaluator training step always re-runs, by design).
 # ============================================================================
 set -euo pipefail
 
@@ -26,10 +29,6 @@ RESNET_EPOCHS="${RESNET_EPOCHS:-80}"
 VIT_EPOCHS="${VIT_EPOCHS:-120}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
 GATE_PROFILE="${GATE_PROFILE:-rtx5090}"
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}"
-# RTX 5090 is Blackwell (compute capability sm_120) -- needs a torch build
-# with CUDA >=12.8 wheels. If this index is wrong for whatever torch/CUDA
-# is current when this actually runs, override: TORCH_INDEX_URL=... bash ...
 
 echo "=== repo root: $REPO_ROOT ==="
 echo "=== conda env:  $CONDA_ENV_NAME ==="
@@ -43,15 +42,31 @@ conda activate "$CONDA_ENV_NAME"
 PYTHON="python"
 echo "=== python: $($PYTHON --version) at $(command -v $PYTHON) ==="
 
-# --- 2. dependencies (idempotent -- pip skips what's already satisfied) --
-echo "=== [1/7] installing dependencies ==="
-if ! $PYTHON -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
-    echo "installing torch (CUDA, $TORCH_INDEX_URL)..."
-    $PYTHON -m pip install torch torchvision --index-url "$TORCH_INDEX_URL"
-else
-    echo "torch + CUDA already available, skipping torch install"
-fi
-$PYTHON -m pip install numpy scipy pyyaml tqdm pillow matplotlib ftfy regex omegaconf click psutil requests pandas pyarrow
+# --- 2. dependency check ONLY -- no installs. Fails fast with a clear list
+#        of missing packages if anything's absent. -----------------------
+echo "=== [1/7] checking dependencies (no installs) ==="
+$PYTHON - <<'PYEOF'
+import importlib, sys
+required = ["torch", "torchvision", "numpy", "scipy", "PIL", "matplotlib",
+            "ftfy", "regex", "omegaconf", "click", "tqdm", "pandas", "pyarrow"]
+missing = []
+for mod in required:
+    try:
+        importlib.import_module(mod)
+    except ImportError:
+        missing.append(mod)
+if missing:
+    print(f"MISSING PACKAGES: {missing}")
+    print("Install these yourself in the autoeval env before re-running.")
+    sys.exit(1)
+import torch
+if not torch.cuda.is_available():
+    print("torch is installed but torch.cuda.is_available() is False -- "
+          "check the CUDA build matches the driver (RTX 5090/Blackwell "
+          "needs CUDA >=12.8 wheels).")
+    sys.exit(1)
+print(f"OK -- torch {torch.__version__}, CUDA available, device: {torch.cuda.get_device_name(0)}")
+PYEOF
 
 # --- 3. reference repos (pinned commits, see THIRD_PARTY.md) -------------
 echo "=== [2/7] setting up reference repos ==="
