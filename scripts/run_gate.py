@@ -66,7 +66,8 @@ def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pa
                         path_name,
                         **({"num_control_points": cfg.geodesic_num_control_points,
                             "optimizer_steps": cfg.geodesic_optimizer_steps,
-                            "lr": cfg.geodesic_lr}
+                            "lr": cfg.geodesic_lr,
+                            "jvp_chunk_size": cfg.geodesic_jvp_chunk_size}
                            if path_name == "tangential_geodesic" else {})
                     )
                     t0 = time.time()

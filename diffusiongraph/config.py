@@ -70,6 +70,11 @@ class GateConfig:
     geodesic_optimizer_steps: int = 200   # curve-energy minimization iterations (path 3)
     geodesic_num_control_points: int = 16 # discretized curve resolution (path 3)
     geodesic_lr: float = 1e-2
+    geodesic_jvp_chunk_size: int = 8      # segments per double-backward JVP call (path 3) --
+                                           # bounds peak memory (see tangential_geodesic.py),
+                                           # calibrated at 8 for a 4GB card (~3.2GB peak).
+                                           # MUST be scaled up for bigger GPUs or it silently
+                                           # caps throughput regardless of available VRAM.
 
     # --- routing measurement (SEED §3.3) ---
     routing_threshold_tau: float = 0.5
@@ -162,6 +167,12 @@ def rtx5090() -> GateConfig:
         batch_size=64,
         amp_dtype="bfloat16",
         grad_checkpointing=False,
+        geodesic_jvp_chunk_size=64,  # ~8x the 4GB-card value; a 32GB card has
+                                     # roughly 8x the headroom (measured: 8
+                                     # segments -> ~3.2GB peak on the 4GB card).
+                                     # Raise further if VRAM usage still looks
+                                     # low -- this was the actual bottleneck
+                                     # behind low utilization on first run.
         geodesic_optimizer_steps=500,
         geodesic_num_control_points=32,
         routing_seeds=(0, 1, 2, 3, 4),
