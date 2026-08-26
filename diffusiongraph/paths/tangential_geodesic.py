@@ -23,6 +23,8 @@ Runs on the UNCONDITIONAL EDM/score_sde checkpoint (Strategic_Blind_Spots
 #2), same as path 2 -- see slerp_noise.py's docstring for why.
 """
 from __future__ import annotations
+import time
+
 import torch
 
 from diffusiongraph.paths.base import PathConstructor, PathResult, forward_diffuse
@@ -93,22 +95,38 @@ class TangentialGeodesicPath(PathConstructor):
 
         optimizer = torch.optim.Adam([interior], lr=self.lr)
         energy_history = []
+        opt_t0 = time.time()
+        log_every = max(1, self.optimizer_steps // 10)  # ~10 progress lines per combination
         for step in range(self.optimizer_steps):
             optimizer.zero_grad()
             points = torch.cat([x_a_sigma.unsqueeze(1), interior, x_b_sigma.unsqueeze(1)], dim=1)
             total_energy = self._energy_backward_chunked(points, score_fn)
             optimizer.step()
             energy_history.append(total_energy)
+            if step == 0 or (step + 1) % log_every == 0 or step + 1 == self.optimizer_steps:
+                elapsed = time.time() - opt_t0
+                per_step = elapsed / (step + 1)
+                eta = per_step * (self.optimizer_steps - step - 1)
+                print(
+                    f"    [tangential_geodesic] step {step+1}/{self.optimizer_steps} "
+                    f"energy={total_energy:.2f} elapsed={elapsed:.1f}s "
+                    f"({per_step:.3f}s/step, ETA {eta:.1f}s for this combo's optimization phase)",
+                    flush=True,
+                )
+
+        print(f"    [tangential_geodesic] optimization done in {time.time()-opt_t0:.1f}s, decoding {k} control points...", flush=True)
 
         with torch.no_grad():
             final_points = torch.cat([x_a_sigma.unsqueeze(1), interior, x_b_sigma.unsqueeze(1)], dim=1)
 
         # Decode every control point to a realistic image for evaluation.
+        decode_t0 = time.time()
         images = []
         with torch.no_grad():
             for i in range(k):
                 img = denoiser.denoise_to_clean(final_points[:, i], sigma_tau, class_labels=None, num_steps=18)
                 images.append(img)
+        print(f"    [tangential_geodesic] decode done in {time.time()-decode_t0:.1f}s", flush=True)
 
         return PathResult(
             path_type=self.name,
