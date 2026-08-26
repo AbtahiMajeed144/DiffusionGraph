@@ -9,3 +9,4 @@ results/
 *.pth
 .venv/
 venv/
+checkpoints/

@@ -1,0 +1,159 @@
+"""
+Central config for the Phase 1 gate (SEED_semantic_class_graph.md §3), amended
+per Analysis_of_gpt.md and Strategic_Blind_Spots_Analysis.md.
+
+Deliberately dataclass-based (not a giant YAML) so the two live profiles —
+`local_poc()` (this machine, RTX 3050 4GB) and `rtx5090()` (scale-up target) —
+are explicit, diffable, and the *only* thing that changes between "prove it
+works" and "run the real gate" is which profile a script loads.
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REFERENCES_DIR = REPO_ROOT / "references"
+DATA_DIR = REPO_ROOT / "data"
+RESULTS_DIR = REPO_ROOT / "results"
+CHECKPOINTS_DIR = REPO_ROOT / "checkpoints"
+
+CIFAR10_CLASSES = [
+    "airplane", "automobile", "bird", "cat", "deer",
+    "dog", "frog", "horse", "ship", "truck",
+]
+
+
+@dataclass
+class GateConfig:
+    # --- identity / bookkeeping ---
+    run_name: str = "phase1_gate_poc"
+    device: str = "cuda"
+    seed: int = 0
+
+    # --- generator (SEED §3.2, amended per Strategic_Blind_Spots #2: CFG/
+    # conditioning contamination is avoided structurally, not just by pinning
+    # w=1.0 — path type 1 (Object 1, conditioning geometry) uses the
+    # class-conditional checkpoint; path types 2/3/4 (Object 2, distribution
+    # geometry) use the UNCONDITIONAL checkpoint, so no class-label choice
+    # of ours ever biases which mode a geometry-aware path is pulled toward.
+    # See scripts/download_edm_checkpoint.py docstring. ) ---
+    edm_checkpoint_cond: Path = CHECKPOINTS_DIR / "edm-cifar10-32x32-cond-vp.pkl"
+    edm_checkpoint_uncond: Path = CHECKPOINTS_DIR / "baseline-cifar10-32x32-uncond-vp.pkl"
+    guidance_weight: float = 1.0          # unused while paths 2-4 run on the uncond model; kept for a future CFG ablation.
+    sampler_steps: int = 18               # EDM default (Karras et al.)
+
+    # --- which class pairs to run (SEED §3.2: all 45 unordered pairs at full
+    # scale; the PoC profile below restricts this to a handful for a fast
+    # correctness pass) ---
+    class_pair_mode: str = "poc_subset"   # "poc_subset" | "all_pairs"
+    poc_pairs: tuple = (
+        (3, 5),   # cat  <-> dog     (plausible route: shared "small mammal" mode)
+        (5, 7),   # dog  <-> horse   (plausible route: quadruped shape)
+        (1, 9),   # auto <-> truck   (plausible route: vehicle silhouette)
+        (3, 0),   # cat  <-> airplane (implausible route: tests barrier case C)
+    )
+    samples_per_class: int = 4            # x~A, y~B sample-pair sets (SEED §5: not centroids)
+
+    # --- timestep filtration (Strategic_Blind_Spots #1: the graph is G(tau),
+    # not a single object). We measure routing at fixed noise levels rather
+    # than integrating across the whole reverse process. ---
+    routing_sigmas: tuple = (0.5, 2.0, 8.0)   # low / mid / high noise, in EDM sigma units
+    path_t_steps: int = 24                     # points sampled along each t in [0,1] path
+
+    # --- path types (SEED §3.2) ---
+    # Phase 1 build order: 1 & 2 are cheap baselines, wired first end-to-end.
+    # 3 (tangential geodesic) is the primary geometry-aware path.
+    # 4 (string method) is DEFERRED to confirmatory use on flagged pairs only
+    # (Strategic_Blind_Spots #4: full finite-temp string method is too
+    # expensive to run exhaustively, especially on a 4GB GPU).
+    enabled_paths: tuple = ("linear_condition", "slerp_noise", "tangential_geodesic")
+    geodesic_optimizer_steps: int = 200   # curve-energy minimization iterations (path 3)
+    geodesic_num_control_points: int = 16 # discretized curve resolution (path 3)
+    geodesic_lr: float = 1e-2
+
+    # --- routing measurement (SEED §3.3) ---
+    routing_threshold_tau: float = 0.5
+    routing_seeds: tuple = (0, 1, 2)
+
+    # --- evaluators (SEED §3.2: >=3 independent, different architectures) ---
+    evaluator_names: tuple = ("resnet18", "vit_small", "clip_zeroshot")
+
+    # --- controls (SEED §3.4) ---
+    run_label_permutation_control: bool = True
+    permutation_seed: int = 1234
+
+    # --- compute footprint knobs (the actual local/5090 delta) ---
+    batch_size: int = 4
+    amp_dtype: str = "float16"            # "float16" on 4GB GPU, "bfloat16"/"float32" on 5090
+    grad_checkpointing: bool = True
+
+
+def local_poc() -> GateConfig:
+    """This machine: RTX 3050, 4GB VRAM. Small subset of pairs, small batches,
+    fp16, gradient checkpointing on. Purpose: prove the pipeline is correct
+    end-to-end before committing to the full exhaustive sweep anywhere."""
+    return GateConfig(
+        run_name="phase1_gate_poc_local",
+        class_pair_mode="poc_subset",
+        samples_per_class=4,
+        batch_size=4,
+        amp_dtype="float16",
+        grad_checkpointing=True,
+        geodesic_optimizer_steps=200,
+        geodesic_num_control_points=16,
+        routing_seeds=(0, 1, 2),
+    )
+
+
+def local_smoke() -> GateConfig:
+    """Fast iteration/debugging profile -- NOT a real gate result, just
+    'does the pipeline run end-to-end without erroring, on something small
+    enough to finish in a couple minutes'. Benchmarked on this machine's
+    RTX 3050 4GB: the tangential-geodesic curve optimizer's JVP-via-double-
+    backward is the bottleneck (segment-chunked to bound memory, at a real
+    time cost -- see paths/tangential_geodesic.py). local_poc()'s settings
+    (200 opt steps x 16 control points x 4 sample-pairs) take on the order
+    of tens of minutes per (class-pair, sigma_tau) combination here; this
+    profile cuts that to under a minute for correctness-checking code
+    changes before committing to a real (if patient) local_poc run."""
+    return GateConfig(
+        run_name="phase1_gate_smoke",
+        class_pair_mode="poc_subset",
+        poc_pairs=((3, 5),),
+        samples_per_class=2,
+        batch_size=2,
+        amp_dtype="float16",
+        grad_checkpointing=True,
+        geodesic_optimizer_steps=30,
+        geodesic_num_control_points=8,
+        routing_sigmas=(2.0,),
+        routing_seeds=(0,),
+        path_t_steps=8,
+    )
+
+
+def rtx5090() -> GateConfig:
+    """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger batches,
+    no gradient checkpointing needed, more geodesic optimizer steps for
+    tighter convergence. Same code path as local_poc() — only these numbers
+    change."""
+    return GateConfig(
+        run_name="phase1_gate_full",
+        class_pair_mode="all_pairs",
+        samples_per_class=16,
+        batch_size=64,
+        amp_dtype="bfloat16",
+        grad_checkpointing=False,
+        geodesic_optimizer_steps=500,
+        geodesic_num_control_points=32,
+        routing_seeds=(0, 1, 2, 3, 4),
+    )
+
+
+PROFILES = {"local_poc": local_poc, "local_smoke": local_smoke, "rtx5090": rtx5090}
+
+
+def get_profile(name: str) -> GateConfig:
+    if name not in PROFILES:
+        raise ValueError(f"Unknown profile '{name}'. Choices: {list(PROFILES)}")
+    return PROFILES[name]()

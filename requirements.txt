@@ -1,0 +1,19 @@
+# Core
+numpy
+scipy
+pyyaml
+tqdm
+pillow
+matplotlib
+
+# Torch (CUDA build installed separately in setup_env.sh — this line is the CPU
+# fallback marker only; the setup script installs the matching cu12x wheel).
+# torch
+# torchvision
+
+# CLIP evaluator
+ftfy
+regex
+
+# config
+omegaconf
