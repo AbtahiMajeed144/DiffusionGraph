@@ -6,8 +6,13 @@ needs to be checked empirically, not assumed).
 
 Reports clean CIFAR-10 test accuracy for all three evaluators. Run this
 after scripts/train_classifiers.py and before scripts/run_gate.py.
+
+Usage:
+    python scripts/validate_evaluators.py                       # rtx5090 defaults: resnet50, vit_base, clip_zeroshot
+    python scripts/validate_evaluators.py --profile local_poc    # resnet18, vit_small, clip_zeroshot
 """
 from __future__ import annotations
+import argparse
 import sys
 from pathlib import Path
 
@@ -16,14 +21,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 from torch.utils.data import DataLoader
 
+from diffusiongraph.config import get_profile
 from diffusiongraph.data.cifar10 import CIFAR10Canonical
 from diffusiongraph.eval.evaluators import load_evaluators
 
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--profile", default="rtx5090", choices=["local_poc", "local_smoke", "rtx5090"])
+    args = p.parse_args()
+    evaluator_names = get_profile(args.profile).evaluator_names
+
     ds = CIFAR10Canonical(train=False, download=True)
     loader = DataLoader(ds, batch_size=128, shuffle=False, num_workers=0)
-    evaluators = load_evaluators(("resnet18", "vit_small", "clip_zeroshot"), device="cuda")
+    evaluators = load_evaluators(evaluator_names, device="cuda")
 
     for name, ev in evaluators.items():
         correct, total = 0, 0

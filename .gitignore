@@ -2,11 +2,12 @@ references/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-data/
-results/
+/data/
+/results/
 *.pkl
 *.pt
 *.pth
 .venv/
 venv/
-checkpoints/
+/checkpoints/
+.claude/

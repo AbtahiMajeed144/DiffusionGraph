@@ -51,6 +51,13 @@ python scripts/run_gate.py --profile local_poc    # this machine, RTX 3050 4GB, 
 python scripts/run_gate.py --profile rtx5090      # full exhaustive 45-pair sweep
 ```
 
+## Bigger PoC on a different machine (RTX 5090)
+
+`experiment/run_rtx5090_poc.sh` is a single self-contained script covering
+the whole pipeline end-to-end (env setup through the full 45-pair gate
+sweep) for running on separate, more powerful hardware — see
+`experiment/README.md`.
+
 Output: `results/gate/<run_name>/decision_memo.json` (GO / PIVOT / KILL per
 SEED §3.5) and `results/gate/<run_name>/figures/` (routing matrix heatmaps
 per path-type/sigma_tau, trajectory plots for the top-routed pairs).
@@ -94,7 +101,16 @@ assumed as "ample". The tangential-geodesic path (type 3) computes JVPs via
 a double-backward trick that needs `create_graph=True` on both internal
 backward passes, which is memory-heavy; it's implemented with
 segment-chunked backward (`jvp_chunk_size`) to bound peak memory regardless
-of batch size, at a real wall-clock cost — expect single-digit minutes per
-(class-pair, sigma_tau) combination at `local_poc` settings on this GPU.
-`local_poc` is scoped to a handful of class pairs for a first correctness
-pass; the full exhaustive 45-pair sweep is the `rtx5090` profile's job.
+of batch size (measured peak: 3.26GB, safely under the 4GB ceiling).
+
+Measured on this GPU: one (class-pair, sigma_tau) combination at
+optimizer_steps=200 / control_points=16 / samples_per_class=4 took **1472s
+(~24.5 min)**. That's the honest cost of the JVP-via-double-backward
+approach at that resolution on a 4GB laptop card — too slow to sweep 4
+pairs x 3 sigmas x 3 seeds (~14.7 hours). `local_poc`'s defaults were
+recalibrated down from that benchmark (steps=60, control_points=8,
+single sigma, 2 seeds) to a projected ~30 min for the full path-3 sweep,
+~1hr total including the permutation control — a real first PoC signal,
+not just a correctness smoke test. `local_smoke` stays for sub-minute
+iteration while changing code. The full exhaustive 45-pair, 3-sigma,
+5-seed sweep at the heavier settings is the `rtx5090` profile's job.

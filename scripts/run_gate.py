@@ -149,7 +149,8 @@ def main():
         # NB: permuted evaluators are trained separately -- see
         # scripts/train_classifiers.py --permuted. CLIP is excluded (see
         # eval/evaluators.load_permuted_evaluators docstring).
-        perm_evaluators = load_permuted_evaluators(device=cfg.device)
+        perm_names = tuple(n for n in cfg.evaluator_names if n != "clip_zeroshot")
+        perm_evaluators = load_permuted_evaluators(names=perm_names, device=cfg.device)
         perm_routing_matrices, perm_pair_c_results, _ = run_sweep(
             cfg, perm_dataset, denoiser_cond, denoiser_uncond, perm_evaluators, class_pairs, out_dir, tag="permuted"
         )

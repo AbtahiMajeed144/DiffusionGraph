@@ -73,8 +73,44 @@ class ResNet(nn.Module):
         return self.linear(out)
 
 
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, in_planes, planes, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_planes, planes, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, 3, stride, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, self.expansion * planes, 1, bias=False)
+        self.bn3 = nn.BatchNorm2d(self.expansion * planes)
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, 1, stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes),
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+        out = out + self.shortcut(x)
+        return F.relu(out)
+
+
 def resnet18(num_classes: int = 10) -> ResNet:
     return ResNet(BasicBlock, [2, 2, 2, 2], num_classes=num_classes)
+
+
+def resnet50(num_classes: int = 10) -> ResNet:
+    """Larger evaluator variant for the rtx5090 profile -- same CIFAR-adapted
+    stem (3x3 stride-1 conv1, no maxpool) as resnet18, just deeper/wider
+    Bottleneck blocks. Not the pretrained torch.hub cifar10_resnet56 we
+    tried first (that GitHub-releases host was unreachable on the dev
+    network -- see THIRD_PARTY.md) -- this trains from scratch, same as
+    resnet18, just bigger + more epochs on faster hardware."""
+    return ResNet(Bottleneck, [3, 4, 6, 3], num_classes=num_classes)
 
 
 # ---------------------------------------------------------------------------
@@ -166,4 +202,17 @@ def vit_small(num_classes: int = 10) -> ViTSmall:
     return ViTSmall(num_classes=num_classes)
 
 
-ARCHITECTURES = {"resnet18": resnet18, "vit_small": vit_small}
+def vit_base(num_classes: int = 10) -> ViTSmall:
+    """Larger evaluator variant for the rtx5090 profile -- ~21M params
+    (hidden=384, 12 layers, 12 heads) vs vit_small's ~2-3M. Still a
+    from-scratch CIFAR-native ViT (not a fine-tuned ImageNet backbone),
+    trained longer with augmentation on faster hardware."""
+    return ViTSmall(num_classes=num_classes, hidden=384, mlp_hidden=384 * 4, num_layers=12, head=12)
+
+
+ARCHITECTURES = {
+    "resnet18": resnet18,
+    "resnet50": resnet50,
+    "vit_small": vit_small,
+    "vit_base": vit_base,
+}

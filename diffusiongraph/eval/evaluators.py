@@ -13,13 +13,13 @@ import torch
 import torch.nn.functional as F
 
 from diffusiongraph.config import CHECKPOINTS_DIR
-from diffusiongraph.models.classifiers import resnet18, vit_small
+from diffusiongraph.models.classifiers import ARCHITECTURES
 from diffusiongraph.models.embeddings import ClipZeroShot
 
 
 class TrainedClassifierEvaluator:
-    """Wraps a trained resnet18/vit_small checkpoint with the uniform
-    predict_proba interface."""
+    """Wraps a trained checkpoint (any ARCHITECTURES entry) with the
+    uniform predict_proba interface."""
 
     def __init__(self, model: torch.nn.Module, checkpoint_path: Path, device: str = "cuda"):
         self.device = torch.device(device if torch.cuda.is_available() or device == "cpu" else "cpu")
@@ -37,31 +37,32 @@ class TrainedClassifierEvaluator:
         return F.softmax(logits, dim=-1)
 
 
-def load_evaluators(names=("resnet18", "vit_small", "clip_zeroshot"), device: str = "cuda") -> Dict[str, object]:
+def load_evaluators(names=("resnet50", "vit_base", "clip_zeroshot"), device: str = "cuda") -> Dict[str, object]:
+    """Any name in ARCHITECTURES (models/classifiers.py) loads from
+    checkpoints/{name}_cifar10.pt; "clip_zeroshot" is the one special case
+    (no training, no checkpoint file -- see models/embeddings.py)."""
     evaluators = {}
     for name in names:
-        if name == "resnet18":
-            ckpt = CHECKPOINTS_DIR / "resnet18_cifar10.pt"
-            evaluators[name] = TrainedClassifierEvaluator(resnet18(), ckpt, device=device)
-        elif name == "vit_small":
-            ckpt = CHECKPOINTS_DIR / "vit_small_cifar10.pt"
-            evaluators[name] = TrainedClassifierEvaluator(vit_small(), ckpt, device=device)
-        elif name == "clip_zeroshot":
+        if name == "clip_zeroshot":
             evaluators[name] = ClipZeroShot(device=device)
+        elif name in ARCHITECTURES:
+            ckpt = CHECKPOINTS_DIR / f"{name}_cifar10.pt"
+            evaluators[name] = TrainedClassifierEvaluator(ARCHITECTURES[name](), ckpt, device=device)
         else:
-            raise ValueError(f"Unknown evaluator '{name}'")
+            raise ValueError(f"Unknown evaluator '{name}'. Choices: clip_zeroshot, {list(ARCHITECTURES)}")
     return evaluators
 
 
-def load_permuted_evaluators(device: str = "cuda") -> Dict[str, object]:
-    """The two trained-from-scratch evaluators, retrained under the
+def load_permuted_evaluators(names=("resnet50", "vit_base"), device: str = "cuda") -> Dict[str, object]:
+    """The trained-from-scratch evaluators, retrained under the
     label-permutation control (SEED §3.4). CLIP is excluded -- it wasn't
     trained on CIFAR-10 labels at all, so there's nothing to permute; its
     zero-shot prompts are tied to real English class names and can't be
     meaningfully "permuted" without changing the experiment's meaning."""
-    ckpt_r = CHECKPOINTS_DIR / "resnet18_cifar10_permuted.pt"
-    ckpt_v = CHECKPOINTS_DIR / "vit_small_cifar10_permuted.pt"
-    return {
-        "resnet18": TrainedClassifierEvaluator(resnet18(), ckpt_r, device=device),
-        "vit_small": TrainedClassifierEvaluator(vit_small(), ckpt_v, device=device),
-    }
+    evaluators = {}
+    for name in names:
+        if name not in ARCHITECTURES:
+            raise ValueError(f"Unknown evaluator '{name}'. Choices: {list(ARCHITECTURES)}")
+        ckpt = CHECKPOINTS_DIR / f"{name}_cifar10_permuted.pt"
+        evaluators[name] = TrainedClassifierEvaluator(ARCHITECTURES[name](), ckpt, device=device)
+    return evaluators

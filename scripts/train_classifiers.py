@@ -1,14 +1,14 @@
 """
-Trains the two independent-architecture evaluators (resnet18, vit_small) on
-CIFAR-10, in canonical [-1, 1] image format, for both the real labels and
-the label-permutation control (SEED §3.4 / data/cifar10.py's
-PermutedLabelCIFAR10). Small models + small dataset -> fast even on 4GB.
+Trains an independent-architecture evaluator (any name in
+diffusiongraph.models.classifiers.ARCHITECTURES) on CIFAR-10, in canonical
+[-1, 1] image format, for both the real labels and the label-permutation
+control (SEED §3.4 / data/cifar10.py's PermutedLabelCIFAR10).
 
 Usage:
     python scripts/train_classifiers.py --arch resnet18
     python scripts/train_classifiers.py --arch vit_small
-    python scripts/train_classifiers.py --arch resnet18 --permuted
-    python scripts/train_classifiers.py --arch vit_small --permuted
+    python scripts/train_classifiers.py --arch resnet50 --epochs 80
+    python scripts/train_classifiers.py --arch vit_base --epochs 120 --permuted
 """
 from __future__ import annotations
 import argparse
@@ -24,20 +24,17 @@ from torch.utils.data import DataLoader
 
 from diffusiongraph.config import CHECKPOINTS_DIR
 from diffusiongraph.data.cifar10 import CIFAR10Canonical, PermutedLabelCIFAR10
-from diffusiongraph.models.classifiers import resnet18, vit_small
-
-
-ARCH_BUILDERS = {"resnet18": resnet18, "vit_small": vit_small}
+from diffusiongraph.models.classifiers import ARCHITECTURES
 
 
 def train(arch: str, permuted: bool, epochs: int, batch_size: int, lr: float, device: str):
     ds_cls = PermutedLabelCIFAR10 if permuted else CIFAR10Canonical
-    train_ds = ds_cls(train=True, download=True)
-    test_ds = ds_cls(train=False, download=True)
+    train_ds = ds_cls(train=True, download=True, augment=True)
+    test_ds = ds_cls(train=False, download=True, augment=False)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=256, shuffle=False, num_workers=0)
 
-    model = ARCH_BUILDERS[arch]().to(device)
+    model = ARCHITECTURES[arch]().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
@@ -82,7 +79,7 @@ def train(arch: str, permuted: bool, epochs: int, batch_size: int, lr: float, de
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--arch", choices=list(ARCH_BUILDERS), required=True)
+    p.add_argument("--arch", choices=list(ARCHITECTURES), required=True)
     p.add_argument("--permuted", action="store_true")
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=128)

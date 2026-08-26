@@ -91,7 +91,20 @@ class GateConfig:
 def local_poc() -> GateConfig:
     """This machine: RTX 3050, 4GB VRAM. Small subset of pairs, small batches,
     fp16, gradient checkpointing on. Purpose: prove the pipeline is correct
-    end-to-end before committing to the full exhaustive sweep anywhere."""
+    end-to-end AND get a real (if narrower) first read on routing, before
+    committing to the full exhaustive sweep anywhere.
+
+    Calibrated from an actual benchmark on this GPU (see PR discussion /
+    session log): at optimizer_steps=200, control_points=16, samples=4, ONE
+    (class-pair, sigma_tau) combination for path 3 took 1472s (~24.5 min),
+    peak 3.26GB. That's ~14.7 hours for the original 4-pair x 3-sigma x
+    3-seed local_poc scope -- too slow even for a patient overnight run. The
+    numbers below cut the *optimization budget* (steps, control points,
+    sigma/seed sweep breadth) rather than sample-pair count (kept at 4,
+    since averaging over real sample pairs is what SEED §5 relies on to
+    avoid centroid artifacts) -- projected to ~2 min/combination, ~30 min
+    for the full path-3 sweep, ~1hr total including the permutation control.
+    """
     return GateConfig(
         run_name="phase1_gate_poc_local",
         class_pair_mode="poc_subset",
@@ -99,9 +112,10 @@ def local_poc() -> GateConfig:
         batch_size=4,
         amp_dtype="float16",
         grad_checkpointing=True,
-        geodesic_optimizer_steps=200,
-        geodesic_num_control_points=16,
-        routing_seeds=(0, 1, 2),
+        geodesic_optimizer_steps=60,
+        geodesic_num_control_points=8,
+        routing_sigmas=(2.0,),   # single mid-noise level for the first pass; widen once this is confirmed to work
+        routing_seeds=(0, 1),
     )
 
 
@@ -133,10 +147,14 @@ def local_smoke() -> GateConfig:
 
 
 def rtx5090() -> GateConfig:
-    """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger batches,
-    no gradient checkpointing needed, more geodesic optimizer steps for
-    tighter convergence. Same code path as local_poc() — only these numbers
-    change."""
+    """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger
+    evaluator architectures (resnet50/vit_base instead of resnet18/
+    vit_small -- see models/classifiers.py), larger batches, no gradient
+    checkpointing needed, more geodesic optimizer steps for tighter
+    convergence, all 3 routing_sigmas levels (inherited from GateConfig's
+    default). Same code path as local_poc() — only these numbers change.
+    See experiment/run_rtx5090_poc.sh for the end-to-end script that uses
+    this profile."""
     return GateConfig(
         run_name="phase1_gate_full",
         class_pair_mode="all_pairs",
@@ -147,6 +165,7 @@ def rtx5090() -> GateConfig:
         geodesic_optimizer_steps=500,
         geodesic_num_control_points=32,
         routing_seeds=(0, 1, 2, 3, 4),
+        evaluator_names=("resnet50", "vit_base", "clip_zeroshot"),
     )
 
 
