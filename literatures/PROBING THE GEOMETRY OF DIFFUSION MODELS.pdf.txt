@@ -1,0 +1,525 @@
+PROBING THEGEOMETRY OFDIFFUSIONMODELS
+WITH THESTRINGMETHOD
+Elio Moreau∗
+Capital Fund Management
+23 Rue de l’Université, 75007 Paris
+elio.moreau@ens.psl.euFlorentin Coeurdoux
+Capital Fund Management
+23 Rue de l’Université, 75007 Paris
+florentin.coeurdoux@cfm.com
+Grégoire Ferre
+Capital Fund Management
+23 Rue de l’Université, 75007 Paris
+gregoire.ferre@cfm.comEric Vanden-Eijnden
+ML Lab, Capital Fund Management
+23 Rue de l’Université, 75007 Paris
+Courant Institute of Mathematical Sciences,
+New York University,
+New York, NY 10012, USA,
+eve2@cims.nyu.edu
+ABSTRACT
+Understanding the geometry of learned distributions is fundamental to improving and interpreting
+diffusion models, yet systematic tools for exploring their landscape remain limited. Standard latent-
+space interpolations fail to respect the structure of the learned distribution, often traversing low-density
+regions. We introduce a framework based on the string method that computes continuous paths
+between samples by evolving curves under the learned score function. Operating on pretrained models
+without retraining, our approach interpolates between three regimes: pure generative transport,
+which yields continuous sample paths; gradient-dominated dynamics, which recover minimum
+energy paths (MEPs); and finite-temperature string dynamics, which compute principal curves—self-
+consistent paths that balance energy and entropy. We demonstrate that the choice of regime matters
+in practice. For image diffusion models, MEPs contain high-likelihood but unrealistic “cartoon”
+images, confirming prior observations that likelihood maxima appear unrealistic; principal curves
+instead yield realistic morphing sequences despite lower likelihood. For protein structure prediction,
+our method computes transition pathways between metastable conformers directly from models
+trained on static structures, yielding paths with physically plausible intermediates. Together, these
+results establish the string method as a principled tool for probing the modal structure of diffusion
+models—identifying modes, characterizing barriers, and mapping connectivity in complex learned
+distributions.
+1 Introduction
+Generative models based on diffusion and flow matching have achieved remarkable success in learning complex data
+distributions. These models transport individual samples from noise to data, implicitly encoding an energy landscape
+through learned score functions. Yet this point-wise perspective obscures the global geometry of the learned distribution:
+its modal structure, the barriers between modes, and the connectivity of the data manifold.
+Understanding pathways between samples has broad applications: morphing between configurations, identifying
+transition states, and revealing mechanisms underlying rare events. In molecular systems, such pathways explain
+conformational changes and folding; in other domains, they can illuminate how the learned distribution connects distinct
+modes. However, current generators provide only samples, not the pathways between them. Exploiting the geometric
+∗Elio Moreau is the corresponding author. Email: elio.moreau@ens.psl.eu.arXiv:2602.22122v1  [stat.ML]  25 Feb 2026
+Probing the Geometry of Diffusion Models with the String Method
+12
+3
+4
+Data Points
+Principal Curve
+MEP
+1
+23
+4
+Figure 1:The likelihood-realism paradox.Top: schematic showing the MEP (green) passing through the high-
+likelihood region (yellow), while the principal curve (red) stays within the typical set where data concentrates (blue
+points). Dashed lines indicate V oronoi cells—regions of points closest to each image along the string. Bottom: actual
+images at numbered locations. Endpoints (1, 2) are identical for both paths; the principal curve intermediate (3) is
+realistic; the MEP intermediate (4) is cartoonish. Full pathways computed by our method are shown in Figures 4 and 5.
+information encoded in the learned landscape requires a principled definition of transition pathways, along with a
+computational procedure to find them.
+We introduce a framework that evolves entirecurvesof samples—strings—rather than individual points. By controlling
+how these strings interact with the learned score function, we can probe different aspects of the distribution geometry.
+Figure 1 previews our main finding: the choice of dynamics reveals a fundamental tension between likelihood and
+realism. Paths that maximize likelihood traverse “cartoon” configurations—simplified, stylized images that the model
+assigns high probability but that lie outside the typical set. Paths that account for entropy, in contrast, remain within the
+typical set and produce perceptually natural transitions. This paper makes three main contributions:
+1.We adapt the string method from computational chemistry to work with learned score functions, enabling pathway
+computation from pretrained generative models without explicit energy functions.
+2.We show how three choices of dynamics—pure transport, gradient-dominated, and finite-temperature—reveal
+complementary aspects of the learned landscape.
+3.We demonstrate that accounting for entropy is essential for realistic pathways in high dimensions—principal curves
+traverse the typical set while MEPs do not—and illustrate this on image morphing and protein conformational
+transitions.
+Importantly, our method operates directly on pretrained models without any retraining or fine-tuning. Given only
+access to the learned velocity field btand score st, we can compute strings in any of the three regimes. This makes the
+approach immediately applicable to existing models.
+1.1 Related Work
+Transition path methods.Computing pathways between metastable states has a long history in computational
+chemistry. The nudged elastic band method [ 1] and string methods [ 2,3,4] evolve chains of configurations to find
+minimum (free) energy paths. Extensions like the finite-temperature string method [ 5] incorporate entropic effects by
+computing principal curves [ 6], building on concepts from transition path theory [ 7,8]. These methods traditionally
+require explicit, time-independent energy functions or force fields. Our key contribution is adapting them to time-
+dependent energies defined implicitly through learned score functions, enabling pathway computation directly from
+pretrained generative models.
+Generative modeling.Diffusion models and flows [ 9,10] learn to reverse a noising process. Stochastic interpolants
+[11,12], flow matching [ 13], and rectified flows [ 14] provide unified frameworks connecting these approaches. Our
+2
+Probing the Geometry of Diffusion Models with the String Method
+method builds on this foundation, using the learned velocity and score fields to define string dynamics. Recent work
+observed that likelihood-maximizing points in diffusion models appear “cartoonish”—perceptually unrealistic despite
+high probability [ 15,16]. We attribute this paradox to concentration of measure in high dimensions, and resolve it via
+finite-temperature string dynamics that account for entropy.
+Image morphing.Interpolating between images in generative models is typically done via linear paths in latent space,
+but such paths often traverse low-density regions producing unrealistic intermediates. DiffMorpher [ 17] addresses
+this through attention interpolation and self-attention guidance; other methods optimize latent trajectories [ 18]. Our
+framework differs by grounding interpolation in the geometry of the learned distribution, showing that naive approaches
+fail by ignoring entropy and that accounting for it yields realistic paths without task-specific modifications.
+Protein conformations.Recent generative models learn conformational distributions from structural databases:
+AlphaFlow [ 19] fine-tunes AlphaFold with flow matching, while DiG [ 20], EigenFold [ 21], ConfDiff [ 22], and
+FoldingDiff [ 23] train diffusion models on conformational ensembles. These methods sample individual conformations
+but do not provide transition pathways between them—yet such pathways are essential for understanding protein
+function, since biological activity often involves conformational changes [ 24,25]. Our string method complements
+these approaches by computing pathways directly from the learned score, potentially revealing folding mechanisms and
+conformational change dynamics from models trained only on static structures.
+2 Methodology
+2.1 Generative Models as Score-Based Dynamics
+Diffusion and flow-matching models learn to reverse a noising process that transforms data into noise. At the heart of
+these methods is a time-dependent density ρt(x)interpolating between a simple density ρ0(x)(typically Gaussian) and
+the data density ρ1(x). The model learns either a velocity field bt(x)or a score function st(x) =∇logρ t(x), which
+are related through the structure of the interpolation.
+Sampling proceeds by integrating a forward-time dynamics. In its most general form, this takes the shape of an SDE:
+dxt=bt(xt)|{z}
+transportdt+γ2
+tst(xt)|{z}
+score correctiondt+√
+2γtdWt|{z}
+noise,(1)
+where the volatility γt≥0can be tuned. Setting γt= 0recovers the deterministic probability flow ODE; positive γt
+yields stochastic samplers.
+A key observation is that st(x) =−∇V t(x)where Vt(x) =−logρ t(x)is an implicit energy landscape. While we
+cannot evaluateV tdirectly, the learned score provides access to its gradient—exactly what the string method requires.
+Crucially, the score is estimated via Stein’s identity (Gaussian integration by parts), which requires adding noise to the
+signal. As t→1 , the noise vanishes and this estimator degrades—the learned score becomes unreliable precisely at the
+data distribution. This is why generative models sample via nonequilibrium transport (pushing noise toward data) rather
+than Langevin dynamics on s1. For the same reason, we cannot simply evolve strings under s1; instead, we must work
+dynamically across the full time interval, leveraging reliable scores at intermediate times. More theoretical details on
+diffusion models can be found in Appendix A.
+2.2 The String Method: General Formulation
+The classical string method [ 2,3] evolves curves under a time-independent potential V(x) . Here we generalize to
+time-dependent velocitiesv t(x)arising from diffusion models. Fors∈(0,1), the string evolves according to
+˙ϕt(s) =v t(ϕt(s)) +λ t(s)∂ sϕt(s),(2)
+where λt(s)is a Lagrange multiplier enforcing the constraint |∂sϕt(s)|=const ins. This constraint prevents bunching
+or spreading of points—without it, points would cluster at attractors of vtrather than tracing a path between them. The
+endpoints ϕt(0)andϕt(1)follow the probability flow ODE ˙ϕt=bt(ϕt), which serve as boundary conditions for the
+string evolution.
+Discrete algorithm.We discretize the string as N+ 1 images {ϕ(i)
+t}N
+i=0. The endpoints ϕ(0)
+tandϕ(N)
+tfollow the
+probability flow; the interior imagesi= 1, . . . , N−1evolve via alternating steps (Figure 2):
+3
+Probing the Geometry of Diffusion Models with the String Method
+Step 1: Evolution.Move each interior image usingv t:
+ϕ(i)
+t+∆t =ϕ(i)
+t+ ∆t v t(ϕ(i)
+t), i= 1, . . . , N−1.(3)
+Step 2: Reparametrization.Redistribute images to restore equal arc-length spacing via linear or cubic spline
+interpolation (for details see Appendix B.2).
+The reparametrization implicitly enforces the λtconstraint. To fully specify the dynamics, we must choose both the
+velocity field vtfor interior images and an initial string {ϕ(i)
+0}N
+i=0; both choices are discussed in Section 2.3. For more
+details on the string method, we refer the reader to Appendix B.
+2.3 From Transport to Energy to Entropy
+What shouldv tbe? We consider three choices, each motivated by limitations of the previous one.
+2.3.1 Pure Transport (γ t= 0)
+ϕtϕt+1ϕt+2
+vt
+Rep
+Figure 2:The string method.Grey dashed arrows show Step 1 (evolu-
+tion): each image moves according to vt, landing at positions marked
+with×. Blue dotted arrows show Step 2 (reparametrization): images
+are redistributed to restore equal arc-length spacing along the string.The simplest choice sets vt=bt, the learned
+velocity field:
+˙ϕt(s) =b t(ϕt(s)) +λ t(s)∂ sϕt(s).(4)
+Starting from a curve of noise samples at
+t= 0 , this produces at t= 1 a con-
+tinuous path morphing between generated
+images. For variance-preserving schedules
+where ρ0=N(0, I) , typical noise samples
+have norm approximately√
+d. Given two
+such samples z0andz1, a natural initializa-
+tion is
+ϕ0(s) =z 0cos(πs/2) +z 1sin(πs/2),(5)
+which traces an approximate geodesic on this
+sphere; a reparametrization step may be ap-
+plied to enforce |∂sϕ0(s)|=const exactly.
+Alternatively, to morph between two specific
+data samples xAandxB, we can integrate
+the probability flow backward from t= 1 to
+t= 0 to obtain z0andz1and use these as
+endpoints—this is the approach taken in our
+experiments.
+Pure transport produces visually appealing morphs, but the resulting path is simply the image of the initial string under
+the flow. While individual images remain typical samples of ρt, the path as a curve is not intrinsically defined—it
+depends entirely on the initialization. To obtain paths with a principled geometric meaning, we must incorporate the
+score.
+2.3.2 Minimum Energy Paths (γ t≫1,T= 0)
+Adding the score term to the velocity connects the string to the energy landscapeV t=−logρ t:
+vt=bt+γ2
+tst=bt−γ2
+t∇Vt.(6)
+In the limit γt→ ∞ , the score term dominates and the string relaxes rapidly toward high-density regions of ρt. Since
+this relaxation is much faster than the evolution of Vtitself, the string effectively sees a quasi-static energy landscape at
+each time, recovering the classical string method and computingminimum energy paths(MEPs).
+Definition 2.1(Minimum Energy Path).A curve ϕ∗: [0,1]→Rdis an MEP if the energy gradient (and hence the
+score) is everywhere tangent to the path:
+[∇V(ϕ∗(s))]⊥=−[s(ϕ∗(s))]⊥= 0,∀s∈[0,1],
+where[·]⊥denotes the component perpendicular to the tangent∂ sϕ∗.
+4
+Probing the Geometry of Diffusion Models with the String Method
+Since in our setting Vt=−logρ t, minimizing energy is equivalent to maximizing likelihood: MEPs aremaximum
+likelihood pathsconnecting two endpoints.
+MEPs are geometrically well-defined: they pass through saddle points, identify transition states, and characterize barrier
+heights. However, in high dimensions, a fundamental problem emerges.
+The likelihood-realism paradox.MEPs maximize likelihood along the path, but in high dimensions, high likelihood
+does not imply high probability mass. Probability mass depends on both the density ρ(x) and the volume of nearby
+configuration space; the latter is an entropic contribution that dominates in high dimensions. Regions where the
+product of density and volume is maximized form thetypical set—where samples actually concentrate.2As a result,
+MEPs traverse modes, which lie outside the typical set.
+This explains the “cartoon” phenomenon [ 15,16]: likelihood-maximizing images appear simplified and unrealistic.
+Our experiments confirm this—as γincreases, MEPs traverse higher-likelihood regions with increasingly cartoonish
+intermediates (Figure 4).
+To find paths connecting samples that remain within the typical set, we must account for entropy. Principal curves,
+discussed next, achieve this.
+2.3.3 Principal Curves (γ t≫1,T >0)
+Principal curves were introduced by [6] to find structure in unstructured data.
+Definition 2.2(Principal Curve).A curve ϕ∗: [0,1]→Rdis a principal curve for a distribution ρif it is
+self-consistent: each point equals the conditional expectation of points that project onto it:
+ϕ∗(s) =E ρ[X|s∗(X) =s],∀s∈[0,1],
+wheres∗(X) = arg min s′∥X−ϕ∗(s′)∥is the projection ofXonto the curve.
+0.0 0.2 0.4 0.6 0.8 1.0
+t103
+102
+101
+100101102model/bracketleftBig/bardblst−ˆst/bardbl
+/bardblst/bardbl/bracketrightBig
+2 dimensions
+8 dimensions
+20 dimensions
+Figure 3:Relative score estimation error:
+Emodel[|st−ˆst|/|st|]as a function of tfor a mix-
+ture of Gaussians in various dimensions. The
+error increases sharply near t= 1 , motivating
+the quenching of γtast→1 . For details see
+Appendix CIn our setting, we take ρ=ρ T∝ρ1/T
+1, where ρ1is the data dis-
+tribution and T∈[0,1] controls the energy-entropy balance, and
+we fix the endpoints ϕ∗(0) =x Aandϕ∗(1) =x B. AtT= 1 , we
+obtain principal curves for ρ1connecting the two samples through the
+typical set; as T→0 ,ρTconcentrates near modes and the principal
+curve converges to an MEP. Our experiments confirm that increasing
+Tyields increasingly realistic intermediates (Figure 5).
+To compute principal curves, we discretize them into N+ 1 images
+{ϕ(i)
+t}N
+i=0, where the projection regions become V oronoi cells Vi=
+{x:∥x−ϕ(i)∥<∥x−ϕ(j)∥for allj̸=i} . We associate to each
+image a walkerx(i)
+tthat samples its V oronoi cell via the full SDE:
+dx(i)
+t=bt(x(i)
+t)dt+γ2
+tst(x(i)
+t)dt+√
+2TγtdWt,(7)
+where integration uses timesteps ∆t=O(γ−2
+t), and we let each
+walker drag its string image toward the running average of its posi-
+tion. This effectively defines the velocity vtof the string. Walkers
+must also remain closer to their associated string image than to any
+other; moves violating this constraint are rejected, enforcing the
+V oronoi restriction. Since btandstare time-dependent, we impose
+a separation of timescales via γt≫1: the walkers equilibrate within
+their V oronoi cells much faster than the landscape Vtevolves, so the string tracks an approximate principal curve at
+each instant.
+The complete finite-temperature string method iterates the following steps fort∈[0,1]:
+Step 1: Walker evolution.Evolve each walker x(i)
+taccording to (7), rejecting moves that violate the minimum-distance
+criterion.
+2For example, the density of a d-dimensional Gaussian N(0, I) is maximal at the origin, but typical samples lie on a sphere of
+radiusr≈√
+d.
+5
+Probing the Geometry of Diffusion Models with the String Method
+Table 1: Three regimes of string dynamics.
+Transport MEP Principal curve
+γt= 0γ t≫1γ t≫1
+T= 0T >0
+Geometric No Yes Yes
+Entropic No No Yes
+Realistic Yes No Yes
+Step 2: String update.Update each string image via EMA: ϕ(i)
+t+∆t = (1−η)ϕ(i)
+t+η x(i)
+t+∆t , where η∈(0,1] controls
+the averaging timescale.
+Step 3: Reparametrization.Redistribute string images to equal arc-length spacing.
+Remark2.3.One might ask why not compute principal curves directly on a pregenerated dataset or the original training
+data. While this could work for curves that remain within high-density regions, we are primarily interested in principal
+curves connecting metastable states—such as distinct protein conformations or image modes. These transition regions
+are precisely where data points are scarce. The string method addresses this by using the learned score to sample locally
+along the curve, even in low-density regions. This also highlights the importance of the boundary conditions in our
+setting: we seek principal curves connecting two specified endpoints, which differs from Hastie’s original formulation
+where the curve is unconstrained.
+2.4 Summary and Implementation
+Table 1 compares the three regimes in which our framework can operate: pure transport gives appealing but geometrically
+unmotivated morphs; MEPs provide geometric grounding but fail in high dimensions; principal curves combine
+geometric meaning with realistic outputs. Algorithm 1 provides the complete procedure for computing strings in any of
+these regimes.
+Algorithm 1Diffusion String Method
+Require:Data samplesx A, xB; velocityb t; scores t
+Require:Parametersγ t,T∈[0,1]; initial timet 0; number of imagesN; timestep∆t=O(γ−2
+t)
+1:z0, z1←integrate˙x t=bt(xt)fromt= 1tot= 0starting atx A, xB
+2:Initialize:ϕ(i)
+t0=z0cos(πi/2N) +z 1sin(πi/2N)fori= 0, . . . , N
+3:Reparametrize{ϕ(i)
+t0}to equal arc-length spacing
+4:whilet <1do
+5:fori= 0toNdo
+6:Evolveϕ(i)
+t(and walkerx(i)
+tifT >0) according to chosen regime
+7:end for
+8:Reparametrize to equal arc-length spacing
+9:end while
+Output:String{ϕ(i)
+1}N
+i=0connectingx AtoxB
+Quenching near t= 1 .When using γt>0(for example to compute MEPs or principal curves), we quench γt→0
+ast→1 to avoid amplifying errors in the estimated score near the data distribution (Figure 3). This ensures that interior
+images arrive accurately at t= 1 . The endpoints always evolve with pure transport ( γt= 0), so they return exactly to
+xAandx B.
+Computational cost.The three regimes differ in expense. Pure transport ( γt= 0) requires only forward integration of
+btwith moderate timesteps. MEPs and principal curves ( γt≫1) require smaller timesteps ∆t=O(γ−2
+t)for stability,
+which dominates the computational cost. In practice, N= 50 –70images, and for principal curves η= 0.1 –0.5,
+provide a good balance between path resolution and cost. Our focus is on interpretability rather than speed: the method
+provides a tool for analyzing the geometry of pretrained diffusion models, requiring only access to btandstwithout
+any retraining. Our experiments demonstrate that the approach is practical for realistic applications.
+6
+Probing the Geometry of Diffusion Models with the String Method
+0 20 40 60
+Image Index i2.5
+0.02.55.07.510.012.515.0
+Log Likelihood (dB/Dims)
+6.5
+6.0
+5.5
+5.0
+4.5
+4.0
+Log10 Density of Images
+Figure 4:Effect of score weight γ.Left: string realizations for γranging from 15 (top) to 2 (middle) to 10−2(bottom)
+in logarithmic steps (factor of√
+10). Higher γdrives paths through abstract, high-likelihood modes; lower γpreserves
+realism. Right: log-likelihood of images along each string (colored curves), overlaid on the likelihood distribution
+of ImageNet validation images (heatmap; see Figure 6 for details). The intermediate images along the MEP reach
+likelihoods far exceeding typical images.
+020 40 60 
+Image Index i2.55.07.510.012.515.017.5L
+og Likelihood (dB/Dims)
+ 6.5
+6.0
+5.5
+5.0
+4.5
+4.0
+Log10 Density of Images
+Figure 5:Effect of temperature T.Left: string realizations for Tranging from 0.1 (top) to 0.5 (middle) to 0.9
+(bottom). Lower Tdrives paths through cartoon-like, high-likelihood regions; higher Tproduces realistic samples.
+Right: log-likelihood of images along each string (colored curves), overlaid on the likelihood distribution of ImageNet
+validation images (heatmap; see Figure 6). As Tincreases, the likelihood of the intermediates images decreases toward
+typical values, and images become more realistic.
+3 Experiments
+We demonstrate the string method on two domains: ImageNet for the likelihood-realism paradox, and proteins for
+conformational transitions.
+3.1 Images: The Three Regimes on ImageNet
+We apply the string method to ImageNet ( 256×256 ) using the SiT-XL-2-256 model [ 26]. Images are encoded to a
+4×32×32 latent space via a V AE. Details of the model architecture are given in Appendix D. Additional image
+pathways are shown in Appendix H.
+Setup.Given two images, we: (1) encode into the Gaussian latent space by backward ODE to t= 0 , (2) initialize a
+discrete string of N= 71 points along a spherical geodesic Eq (5), and (3) evolve the string according to Eq (7)with
+score weight γt=γfor0.1≥t≥0.95 andγt= 0otherwise, where γis a tunable parameter described below. This
+schedule prevents the string from drifting away from the typical set (i.e., the sphere in Gaussian latent space) near t= 0 ,
+while avoiding regions where the score approximation degrades ast→1(Figure 3).
+Effect of score weight γatT= 0 .Figure 4 visualizes strings interpolating between two beaver images for varying γ
+andT= 0. Full strings are size 71, but we show only of subsample of 11 (1 image every 6).
+With alargescore weight ( γ= 15 , top row), the string is driven toward high-likelihood regions, yielding intermediates
+that lie close to the MEP. Notably, the maximum-likelihood intermediate is a highly abstract, nearly single-color image,
+confirming thatthe MEP passes through likelihood maxima that lie outside the typical set and, as a result, are
+perceptually unrealistic.
+7
+Probing the Geometry of Diffusion Models with the String Method
+2.5
+ 0.0 2.5 5.0 7.5 10.0 12.5 15.0 17.5
+Log Likelihood (dB/dim)0.000.010.020.030.040.050.06Density of Images0 5 10 15104
+103
+102
+Imagnet Validation Set
+MEPs
+T = 0.1
+T = 0.5
+T = 0.9
+Figure 6:Likelihood distributions.Histogram of log-
+likelihoods for ImageNet 256×256 validation images (blue),
+compared with images along MEPs (orange) and finite-
+temperature strings at T= 0.1 (green), T= 0.5 (red),
+andT= 0.9 (purple), aggregated across multiple strings.
+MEP intermediates have significantly higher likelihood than
+real images, confirming they lie outside the typical set. As
+temperature increases, string images approach the likeli-
+hood distribution of real data. Inset: same data on log scale.With amoderatescore weight ( γ= 2 , middle row), inter-
+mediates becomecartoon-like, consistent with prior ob-
+servations in diffusion-based interpolation [ 15,16]. With
+smallscore guidance ( γ= 10−2, bottom row), the string
+produces visually plausible intermediates throughout.
+The left panel reports log-likelihood along each string:
+for large γ, the trajectory passes through a pronounced
+likelihood peak. The gap between typical-image likeli-
+hoods and this maximum provides a rough estimate of
+the data-manifold diameter in likelihood space.
+Effect of temperature T.Figure 5 illustrates the finite-
+temperature method for varyingTwhenγ= 7.
+Atlow temperature( T= 0.1 , first row), results closely re-
+semble those of the zero-temperature MEP string method,
+recovering cartoon-like images. Atmoderate tempera-
+ture(T= 0.5 , second row), intermediates exhibit slightly
+more detail but remain cartoon-like. Athigh temperature
+(T≈1 , final row),the principal curve passes through
+realistic-looking intermediates that balance energy
+and entropy.Additional examples illustrating the effect
+of temperature can be found in Appendix H.
+Principal curves.Figure 7 shows a principal curve be-
+tween two images from thegooseclass, computed using
+the finite-temperature method with T= 0.9 andγ= 7 .
+The first row displays the principal curve itself: each im-
+age is obtained by EMA from its associated walker. The
+remaining three rows show the walkers at t= 1 that were used to compute the EMA. Upon close inspection, one can
+observe subtle differences between walkers—an effect of entropy—which average out to produce the smoother images
+along the principal curve.
+Likelihood DistributionsIn Figure 6, we present the histogram of log-likelihood values for the ImageNet validation
+set, alongside the log-likelihoods of images obtained from a large collection of strings generated using the algorithms
+described above. The distribution corresponding to the MEP exhibits pronounced peaks at substantially higher
+likelihoods than those observed for the validation set. Moreover, the finite-temperature strings display peaks whose
+locations shift systematically with temperature: as the temperature increases, the peak likelihood decreases, indicating a
+negative correlation between temperature and likelihood, consistent with theoretical expectations.
+3.2 Proteins: Conformational Transitions
+We apply the string method to predict transition pathways between protein conformations using two diffusion models.
+One, called DiG [20], operates in SE(3) and it has been trained on experimental structures up to December 2020. The
+other, ScoreMD [ 27], operates in R3and includes a Fokker–Planck regularization term during training to improve score
+estimation neart= 1.
+Motivation.Proteins fluctuate between metastable conformations, but experiments typically capture only static
+snapshots. Transition pathways—the sequence of intermediate structures connecting conformers—are crucial for
+understanding function but are rarely observed directly. Computational methods such as molecular dynamics can in
+principle reveal these pathways, but the timescales involved often exceed what is computationally accessible [ 28]. We
+demonstrate that our framework, applied to a pretrained generative model, can predict plausible transition pathways by
+computing principal curves with the finite-temperature string method. These pathways connect endpoint conformations
+while remaining within the typical set of the learned distribution, balancing likelihood and entropy.
+Method.Given two conformations of the same protein, we apply the string method in the SE(3)-equivariant space of
+the model. The score function is derived from the model’s denoising objective. Details are given in Appendices F and E.
+8
+Probing the Geometry of Diffusion Models with the String Method
+Principal curve
+Walkers
+Figure 7:Principal curve for images from thegooseclass.Top row: images along the principal curve, computed as
+the EMA of associated walkers ( T= 0.9 ,γ= 7 ). Bottom three rows: individual walkers at t= 1 . The walkers exhibit
+subtle variations due to entropic effects (best seen when zoomed in); averaging produces the smoother images in the
+principal curve.
+Figure 8:Adenylate Kinase transition pathway.Pathway between the open (4AKE) and closed (1AKE) conformations
+computed using DiG. Intermediate structures maintain physical plausibility (secondary structure preservation, no steric
+clashes).
+Adenylate Kinase.Adenylate kinase (AdK) is a phosphotransferase enzyme that undergoes a large-scale conforma-
+tional change between open and closed states during catalysis [ 29]. This transition has been extensively studied as a
+model system for understanding protein dynamics [ 30,31]. Using DiG, we computed the pathway between the open
+(PDB: 4AKE) and closed (PDB: 1AKE) conformations (Figure 8). The intermediates preserve secondary structure
+elements and avoid steric clashes, suggesting physically plausible transitions despite the model being trained only on
+static structures.
+BBA and Chignolin.BBA and Chignolin are small protein domains widely used as model systems for protein folding
+due to their rapid folding kinetics and simple topologies [ 32]. Using ScoreMD [ 27], we computed minimum energy
+paths (MEPs) connecting extended and folded conformations for both proteins.
+For ScoreMD, the score function is accurately learned near t= 1 , allowing us to apply the classical string method at a
+fixed time to compute MEPs. However, the high dimensionality and rough landscape make optimization sensitive to
+initialization. We therefore use as initialization a string obtained by pure transport (γ= 0).
+Figures 9 and 10 show the computed pathways projected onto the first two time-independent components (TICs)
+[33]. Left panels display the MEP (yellow) and initial string (purple) projected onto TIC coordinates and overlaid on
+a free-energy landscape, where free energy is estimated as −logρ from a histogram of i.i.d. samples generated by
+ScoreMD; darker regions indicate lower free energy. The MEP is driven toward lower free-energy regions compared to
+the initial string. Some path segments may appear to overlap due to projection from high dimensions; asterisks mark
+equal arc-length intervals to clarify the geometry.
+Right panels show the free energy profile along each pathway, relative to the starting conformation. The initial string has
+significantly higher free energy than the converged MEP, demonstrating that the string relaxation is essential. Because
+9
+Probing the Geometry of Diffusion Models with the String Method
+TIC 1TIC 2
+Initial String
+Converged String
+0 20 40 60 80 100 120
+length along path200
+150
+100
+50
+050Energy (kbT)
+Initial String
+Converged String
+Figure 9:BBA folding pathway.Top: structures along the initial string obtained by pure transport ( γ= 0 ). Bottom:
+structures along the converged MEP. Both show progressive formation of secondary structure. Left panel: initial string
+(purple) and MEP (green) projected onto the first two TIC components, overlaid on a free-energy landscape estimated
+from ScoreMD samples; darker regions indicate lower free energy. Asterisks mark equal arc-length intervals. Right
+panel: energy profile along each pathway. The MEP achieves significantly lower energy than the initial string.
+the dimensionality is substantially lower than in the image setting, the MEPs remain physically realistic rather than
+cartoonish.
+Above the two panels for each protein, we include a three-dimensional rendering of its folding pathway; the protein is
+colored consistently with the corresponding pathway to facilitate visual correspondence.
+4 Conclusion
+We adapted the string method to probe the geometry of learned distributions using score functions from pretrained
+generative models. By varying the dynamics—pure transport, gradient-dominated, or finite-temperature—we reveal
+complementary aspects of the distribution landscape.
+Our key finding is that accounting for entropy is essential in high dimensions. Minimum energy paths traverse
+high-likelihood but low-probability regions, producing cartoonish artifacts. Principal curves, which balance energy
+against entropy, yield realistic transitions with stronger theoretical grounding. These results confirm and explain prior
+observations that high-likelihood samples from diffusion models appear unrealistic [ 15,16]: the phenomenon is not a
+model defect but a consequence of concentration of measure, and can be resolved by accounting for entropy.
+This establishes the string method as a tool for analyzing generative models beyond sampling: identifying modes,
+characterizing barriers, and mapping connectivity in complex learned distributions. Importantly, the method requires no
+retraining—only access to the learned velocity and score fields.
+10

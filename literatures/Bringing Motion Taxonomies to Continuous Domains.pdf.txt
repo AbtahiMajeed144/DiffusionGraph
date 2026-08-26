@@ -1,0 +1,929 @@
+Bringing Motion Taxonomies to Continuous Domains
+via GPLVM on Hyperbolic Manifolds
+No´emie Jaquier1Leonel Rozo2Miguel Gonz ´alez-Duque3Viacheslav Borovitskiy4Tamim Asfour1
+Abstract
+Human motion taxonomies serve as high-level hi-
+erarchical abstractions that classify how humans
+move and interact with their environment. They
+have proven useful to analyse grasps, manipula-
+tion skills, and whole-body support poses. De-
+spite substantial efforts devoted to design their
+hierarchy and underlying categories, their use
+remains limited. This may be attributed to the
+lack of computational models that fill the gap be-
+tween the discrete hierarchical structure of the tax-
+onomy and the high-dimensional heterogeneous
+data associated to its categories. To overcome
+this problem, we propose to model taxonomy data
+via hyperbolic embeddings that capture the as-
+sociated hierarchical structure. We achieve this
+by formulating a novel Gaussian process hyper-
+bolic latent variable model that incorporates the
+taxonomy structure through graph-based priors
+on the latent space and distance-preserving back
+constraints. We validate our model on three differ-
+ent human motion taxonomies to learn hyperbolic
+embeddings that faithfully preserve the original
+graph structure. We show that our model properly
+encodes unseen data from existing or new taxon-
+omy categories, and outperforms its Euclidean
+and V AE-based counterparts. Finally, through
+proof-of-concept experiments, we show that our
+model may be used to generate realistic trajecto-
+ries between the learned embeddings.
+1. Introduction
+Robotic systems or virtual characters that exhibit human-
+or animal-like capabilities are often inspired by biological
+insights (Siciliano & Khatib, 2016). In the particular context
+of motion generation, it is first necessary to understand how
+1Karlsruhe Institute of Technology2Bosch Center for Artificial
+Intelligence3University of Copenhagen4ETH Z ¨urich. Correspon-
+dence to: No ´emie Jaquier <noemie.jaquier@kit.edu >.
+Proceedings of the 41stInternational Conference on Machine
+Learning , Vienna, Austria. PMLR 235, 2024. Copyright 2024 by
+the author(s).humans move and interact with their environment to then
+generate biologically-inspired motions and behaviors of
+robotic hands, arms, humanoids, or animated characters.
+In this endeavor, researchers have proposed to structure
+and categorize human hand grasps and body poses into
+hierarchical classifications known as taxonomies . Their
+structure depends on the sensory variables considered to
+categorize human motions and the interactions with the
+environment, as well as on associated qualitative measures.
+Different taxonomies have been proposed in the area of hu-
+man and robot grasping (Cutkosky, 1989; Feix et al., 2016;
+Abbasi et al., 2016; Stival et al., 2019). Feix et al. (2016) in-
+troduced a hand grasp taxonomy whose structure was mainly
+defined by the hand pose and the type of contact with the
+object. As such taxonomy heavily depends on subjective
+qualitative measures, Stival et al. (2019) proposed a quan-
+titative tree-like hand grasp taxonomy based on muscular
+and kinematic patterns. A similar data-driven approach was
+used to design a grasp taxonomy based on contact forces
+in (Abbasi et al., 2016). Bullock et al. (2013) introduced a
+hand-centric manipulation taxonomy that classifies manipu-
+lation skills according to the type of contact with the objects
+and the object motion imparted by the hand. A different
+strategy was developed by Paulius et al. (2019), who de-
+signed a manipulation taxonomy based on a categorization
+of contacts and motion trajectories. Humanoid robotics also
+made significant efforts to analyze human motions, thus
+proposing taxonomies as high-level abstractions of human
+motion configurations. For example, Borr `as et al. (2017)
+analyzed the contacts between the human limbs and the en-
+vironment to design a whole-body support pose taxonomy.
+Besides their analytical purpose in biomechanics or robotics,
+some of the aforementioned taxonomies were employed
+for modeling grasp actions (Romero et al., 2010; Lin &
+Sun, 2015), for planning contact-aware whole-body pose
+sequences (Mandery et al., 2016a), and for learning manip-
+ulation skills embeddings (Paulius et al., 2020). However,
+despite most of these taxonomies carry a well-defined hi-
+erarchical structure, it was often overlooked. First, these
+taxonomies were usually employed for classification tasks
+where only the tree leaves were used to define target classes,
+disregarding the full taxonomy structure (Feix et al., 2016;
+1arXiv:2210.01672v5  [cs.RO]  15 Sep 2024
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+Abbasi et al., 2016). Second, the discrete representation
+of the taxonomy categories hindered their use for motion
+generation (Romero et al., 2010).
+Arguably the main difficulty of leveraging human motion
+taxonomies is the lack of computational models that exploit
+(i)the domain knowledge encoded in the hierarchy, and (ii)
+the information of the high-dimensional data associated to
+the taxonomy categories. We tackle this problem from a
+representation learning perspective by modeling taxonomy
+data as embeddings that capture the associated hierarchical
+structure. Inspired by the pioneer work of Krioukov et al.
+(2010) on the use of hyperbolic geometry on complex hierar-
+chies, and by recent advances on hierarchical representation
+learning (Nickel & Kiela, 2017; 2018; Mathieu et al., 2019;
+Montanaro et al., 2022), we propose to leverage the hyper-
+bolic manifold (Ratcliffe, 2019) to learn such embeddings.
+An important property of the hyperbolic manifold is that
+distances grow exponentially when moving away from the
+origin, and shortest paths between distant points tend to pass
+through it, resembling a continuous hierarchical structure .
+Therefore, we hypothesize that the geometry of the hyper-
+bolic manifold allows us to learn embeddings that comply
+with the hierarchical structure of human motion taxonomies.
+In this paper we propose a Gaussian process hyperbolic
+latent variable model (GPHLVM) to learn embeddings of
+taxonomy data on the hyperbolic manifold. Our first con-
+tribution tackles the challenges that arise when imposing a
+hyperbolic geometry to the latent space of the well-known
+GPLVM (Lawrence, 2003; Titsias & Lawrence, 2010), a
+model that has been successfully applied in human pose
+estimation and motion generation (Lawrence & Qui ˜nonero
+Candela, 2006; Urtasun et al., 2008; Gupta et al., 2008; Ding
+& Fan, 2015; Lalchand et al., 2022b), and in complex set-
+tings such as robotic dressing assistants (Nishanth Koganti
+& Ikeda, 2019). Specifically, we reformulate the Gaus-
+sian distribution, the kernel, and the optimization process
+of the GPLVM to account for the geometry of the hyper-
+bolic latent space. To do so, we leverage the hyperbolic
+wrapped Gaussian distribution (Nagano et al., 2019), and
+provide a positive-definite-guaranteed approximation of the
+hyperbolic kernel proposed by McKean (1970). Moreover,
+we resort to Riemannian optimization (Absil et al., 2007;
+Boumal, 2023) to optimize the GPHLVM embeddings. Our
+GPHLVM is conceptually similar to the GPLVM for Lie
+groups (Jensen et al., 2020), which also imposes geometric
+properties to the GPLVM latent space. However, our formu-
+lation is specifically designed for the hyperbolic manifold
+and fully built on tools from Riemannian geometry. More-
+over, unlike (Tosi et al., 2014) and (Jørgensen & Hauberg,
+2021), where the latent space was endowed with a pullback
+Riemannian metric learned via the GPLVM mapping, we
+impose the hyperbolic geometry to the GPHLVM latent
+space as an inductive bias to comply with the hierarchicalstructure of taxonomy data. As a second contribution , we
+introduce mechanisms to enforce the taxonomy structure
+in the learned embeddings through graph-based priors on
+the latent space and via graph-distance-preserving back con-
+straints (Lawrence & Qui ˜nonero Candela, 2006; Urtasun
+et al., 2008).
+We validate our approach on three distinct human motion
+taxonomies: a bimanual manipulation taxonomy (Krebs
+& Asfour, 2022), a hand grasps taxonomy (Stival et al.,
+2019), and a whole-body support pose taxonomy (Borr `as
+et al., 2017). The proposed GPHLVM successfully learns
+hyperbolic embeddings that comply with the original graph
+structure of all the considered taxonomies, and it properly
+encodes unseen poses from existing or new taxonomy nodes.
+Moreover, we show how we can exploit the continuous
+geometry of the hyperbolic manifold to generate trajectories
+between different embeddings pairs via geodesic paths in
+the latent space. We leverage this to, for example, generate
+realistic trajectories that are competitive with state-of-the-art
+character animation, while being trained at low data regimes.
+Our results show that GPHLVM consistently outperforms
+its Euclidean and V AE-based counterparts. The source code
+and video accompanying the paper are available at https:
+//sites.google.com/view/gphlvm/ .
+2. Background
+Gaussian Process Latent Variable Models: A GPLVM
+defines a generative mapping from latent variables
+{xn}N
+n=1,xn∈RQto observations {yn}N
+n=1,yn∈RDby
+modeling the corresponding non-linear transformation with
+Gaussian processes (GPs) (Lawrence, 2003). The GPLVM
+is described as,
+yn,d∼ N(yn,d;fn,d, σ2
+d)
+with fn,d∼GP(md(xn), kd(xn,xn)),
+andxn∼ N(0,I),(1)
+where yn,ddenotes the d-th dimension of the observation yn,
+md(·) :RQ→Randkd(·,·) :RQ×RQ→Rare the GP
+mean and kernel function, respectively, and σ2
+dis a hyper-
+parameter. Conventionally, the hyperparameters and latent
+variables of the GPLVM were optimized using maximum
+likelihood ormaximum a posteriori (MAP) estimates. As
+this does not scale gracefully to large datasets, contemporary
+methods use inducing points and variational approximations
+of the evidence (Titsias & Lawrence, 2010). In contrast to
+neural-network-based generative models, GPLVMs are data
+efficient and provide automatic uncertainty quantification.
+Riemannian geometry: To understand the hyperbolic
+manifold, it is necessary to first define some basic Rieman-
+nian geometry concepts (Lee, 2018). To begin with, consider
+a Riemannian manifold M, which is a locally Euclidean
+topological space with a globally-defined differential struc-
+ture. For each point x∈ M , there exists a tangent space
+2
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+Figure 1: Left: Illustration of the Lorentz L2and Poincar ´eP2models of the hyperbolic manifold. The former is depicted as the gray
+hyperboloid, while the latter is represented by the blue circle. Both models show a geodesic ( ) between two points x1() andx2().
+The vector u( ) lies on the tangent space of x1such that u=Logx1(x2).Right: Hand grasp taxonomy (Stival et al., 2019) used in
+one of our experiments. Grasp types are organized in a tree structure based on their muscular and kinematic properties. Each leaf node of
+the tree is a hand grasp type. The lines represent the depth of the leaves, e.g., PEandIEare at distance 2and3from the root node.
+TxMthat is a vector space consisting of the tangent vectors
+of all the possible smooth curves passing through x. A Rie-
+mannian manifold is equipped with a Riemannian metric,
+which permits to define curve lengths in M. Shortest-path
+curves, called geodesics, can be seen as the generalization
+of straight lines on the Euclidean space to Riemannian man-
+ifolds, as they are minimum-length curves between two
+points in M. To operate with Riemannian manifolds, it is
+common practice to exploit the Euclidean tangent spaces. To
+do so, we resort to mappings back and forth between TxM
+andM, which are the exponential and logarithmic maps.
+The exponential map Expx(u) :TxM → M maps a point
+uin the tangent space of xto a point yon the manifold, so
+that it lies on the geodesic starting at xin the direction u,
+and such that the geodesic distance dMbetween xandy
+equals the distance between xandu. The inverse operation
+is the logarithmic map Logx(u) :M → T xM. Finally, the
+parallel transport Px→y 
+u
+:TxM → T yMoperates with
+manifold elements lying on different tangent spaces.
+Hyperbolic manifold: The hyperbolic space Hdis the
+unique simply-connected complete d-dimensional Rieman-
+nian manifold with a constant negative sectional curva-
+ture (Ratcliffe, 2019). There are several isometric models
+for the hyperbolic space, in particular, the Poincar ´e ballPd
+and the Lorentz (hyperboloid) model Ld(see Fig. 1- left).
+The latter representation is chosen here as it is numerically
+more stable than the former, and thus better suited for Rie-
+mannian optimization (see App. A.1 for the principal Rie-
+mannian operations and their illustration on the Lorentz
+model). However, the Poincar ´e model provides a more intu-
+itive representation and is here used for visualization. This
+is easily achieved by leveraging the isometric mapping be-
+tween both models (see App. A.2 for details). An important
+property of the hyperbolic manifold is the exponential rate
+of the volume growth of a ball with respect to its radius. In
+other words, distances in Hdgrow exponentially when mov-
+ing away from the origin, and shortest paths between distant
+points on the manifold tend to pass through the origin, re-
+sembling a continuous hierarchical structure. Because of
+this, the hyperbolic manifold is often exploited to embed
+hierarchical data such as trees or graphs (Nickel & Kiela,2017; Chami et al., 2020). Although its potential to em-
+bed discrete data structures into a continuous space is well
+known in the machine learning community, its application
+in motion analysis and generation is presently scarce.
+Hyperbolic wrapped Gaussian distribution: Probabilis-
+tic models on Riemannian manifolds demand to work with
+probability distributions that consider the manifold geom-
+etry. We use the hyperbolic wrapped distribution (Nagano
+et al., 2019), which builds on a Gaussian distribution on the
+tangent space at the origin µ0= (1,0, . . . , 0)TofLd, that
+is then projected onto the hyperbolic space after transporting
+the tangent space to the desired location. Intuitively, the
+construction of this wrapped distribution is as follows (see
+also Fig. 6): (1)sample a point ˜v∈Rdfrom the Euclidean
+normal distribution N(0,Σ),(2)transform ˜vto an element
+ofTµ0Ld⊂Rd+1by setting v= (0,˜v)T,(3)apply the
+parallel transport u= Pµ0→µ 
+v
+, and (4)project utoLd
+via Expµ(u). The resulting probability density function is,
+logNLd(x;µ,Σ) = log N(v;0,Σ) (2)
+−(d−1) log (sinh( ∥u∥L)/∥u∥L),
+withv= Pµ→µ0 
+u
+,u=Logµ(x), and∥u∥2
+L=⟨u,u⟩µ.
+The hyperbolic wrapped distribution (Nagano et al., 2019)
+has a more general expression given in (Skopek et al., 2020).
+3. The proposed GPHLVM
+We present the GPHLVM, that extends GPLVM to hyper-
+bolic latent spaces. A GPHLVM defines a generative map-
+ping from the hyperbolic latent space LQto the observation
+space, e.g., the data associated to the taxonomy, based on
+GPs. By considering independent GPs across the observa-
+tion dimensions, the GPHLVM is formally described as,
+yn,d∼ N(yn,d;fn,d, σ2
+d)
+with fn,d∼GP(md(xn), kLQ
+d(xn,xn))
+andxn∼ NLQ(µ0, αI),(3)
+where yn,ddenotes the d-th dimension of the observation
+yn∈RDandxn∈ LQis the corresponding latent variable.
+Our GPHLVM is built on hyperbolic GPs, characterized by
+3
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+a mean function md(·) :LQ→R(usually set to 0), and
+a kernel kLQ
+d(·,·) :LQ× LQ→R. These kernels encode
+similarity information in the latent hyperbolic manifold and
+should reflect its geometry to perform effectively, as de-
+tailed in §. 3.1. Also, the latent variable x∈ LQis assigned
+a hyperbolic wrapped Gaussian prior NLQ(µ0, αI)based
+on(2), where µ0is the origin of LQ, and the parameter α
+controls the spread of the latent variables in LQ. As Eu-
+clidean GPLVMs, our GPHLVM can be trained by finding
+a MAP estimate or via variational inference. However, spe-
+cial care must be taken to guarantee that the latent variables
+belong to the hyperbolic manifold, as explained in §. 3.2.
+3.1. Hyperbolic kernels
+For GPs in Euclidean spaces, the squared exponential (SE)
+and Mat ´ern kernels are standard choices (Rasmussen &
+Williams, 2006). In the modern machine learning literature
+these were generalized to non-Euclidean spaces such as
+manifolds (Borovitskiy et al., 2020; Jaquier et al., 2021)
+or graphs (Borovitskiy et al., 2021). The generalized SE
+kernels can be connected to the much studied heat kernels .
+These are given (cf. Grigoryan & Noguchi (1998)) by,
+kL2(x,x′) =σ2
+C∞Z∞
+ρse−s2/(2κ2)
+(cosh( s)−cosh( ρ))1/2ds,(4)
+kL3(x,x′) =σ2
+C∞ρ
+sinhρe−ρ2/(2κ2), (5)
+where ρ= dist Ld(x,x′)is the geodesic distance between
+x,x′∈ Ld,κandσ2are the kernel lengthscale and vari-
+ance, and C∞is a normalizing constant. To the best of our
+knowledge, no closed form expression for L2is known. In
+this case, the kernel is approximated via a discretization
+of the integral. One appealing option is the Monte Carlo
+approximation based on the truncated Gaussian density. Un-
+fortunately, such approximations easily fail to be positive
+semidefinite if the number of samples is not very large. We
+address this via an alternative Monte Carlo approximation,
+kL2(x,x′)≈σ2
+C′∞1
+LLX
+l=1sltanh( πsl)ww, (6)
+where⟨xP,b⟩=1
+2log1−|xP|2
+|xP−b|2is the hyperbolic outer prod-
+uct with xPbeing the representation of xas a point on
+the Poincar ´e disk P2=D,w=e(2sli+1)⟨xP,bl⟩with
+i,zdenoting the imaginary unit and complex conjuga-
+tion, respectively, bli.i.d.∼U(T)withTthe unit circle, and
+sli.i.d.∼e−s2κ2/21[0,∞)(s). The distributions of blandslare
+easy to sample from: The former is sampled by applying
+x→e2πixtox∼U([0,1])and the latter is (proportional
+to) a truncated normal distribution. Importantly, the right-
+hand side of (6)is easily recognized to be an inner product
+in the space CL, which implies its positive semidefiniteness.Notice that we leverage the isometry between Lorentz and
+Poincar ´e models (see App. A) for computing the kernel (6)
+(see App. B for details on (6)). Note that hyperbolic kernels
+forLQwithQ > 3are generally defined as integrals of
+the kernels (4)(Grigoryan & Noguchi, 1998). Analogs of
+Mat´ern kernels for LQare obtained as integral of the SE
+kernel of the same dimension (Jaquier et al., 2021).
+3.2. Model training
+As in the Euclidean case, training the GPHLVM is equiva-
+lent to finding optimal latent variables X={xn}N
+n=1and
+hyperparameters Θ={θd}D
+d=1by solving argmaxX,Θℓ,
+withxn∈ LQ,θdbeing the hyperparameters of the d-th GP,
+andℓas a loss function. We introduce a GPHLVM trained
+via MAP estimation for small datasets and a variational
+GPHLVM that handles larger datasets, providing users with
+the most appropriate tool for their needs. Note that recent
+extensions of GPLVM (Lalchand et al., 2022a;b) scale to
+massively large datasets via stochastic variational inference.
+For small datasets, the GPHLVM can be trained by maxi-
+mizing the log posterior, i.e., ℓMAP= log 
+p(Y|X)p(X)
+withY= (y1. . .yN)TandX= (x1. . .xN)T. For large
+datasets, the GPHLVM can be trained, similarly to the
+so-called Bayesian GPLVM (Titsias & Lawrence, 2010),
+by maximizing the marginal likelihood of the data, i.e.,
+ℓV A= log p(Y) = logR
+p(Y|X)p(X)dX. As this quan-
+tity is intractable, it is approximated via variational inference
+by adapting the methodology of Titsias & Lawrence (2010)
+to hyperbolic latent spaces, as explained next. Correspond-
+ing algorithms are provided in App. D.
+Variational inference: We approximate the posterior
+p(X|Y)by a variational distribution defined as a hyper-
+bolic wrapped normal distribution over the latent variables,
+qϕ(X) =NY
+n=1NLQ(xn;µn,Σn), (7)
+with variational parameters ϕ={µn,Σn}N
+n=1, withµn∈
+LQandΣn∈ TµnLQ. Similarly to the Euclidean case (Tit-
+sias & Lawrence, 2010), this variational distribution allows
+the formulation of a lower bound,
+logp(Y)≥Eqϕ(X)[logp(Y|X)]−KL 
+qϕ(X)||p(X)
+.
+(8)
+The KL divergence KL 
+qϕ(X)||p(X)
+between two hyper-
+bolic wrapped normal distributions can easily be evaluated
+via Monte-Carlo sampling (see App. C.1 for details). More-
+over, the expectation Eqϕ(X)[logp(Y|X)]can be decom-
+posed into individual terms for each observation dimension
+asPD
+d=1Eqϕ(X)[logp(yd|X)], where ydis the d-th col-
+umn of Y. For large datasets, each term can be evaluated
+via a variational sparse GP approximation (Titsias, 2009;
+Hensman et al., 2015). To do so, we introduce Minduc-
+ing inputs {zd,m}M
+m=1withzd,m∈ LQfor each observa-
+tion dimension d, whose corresponding inducing variables
+4
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+{ud,m}M
+m=1are defined as noiseless observations of the
+GP in (3), i.e, ud∼GP(md(zd), kLQ
+d(zd,zd)). Similar
+to (Hensman et al., 2015), we can write,
+logp(yd|X)≥Eqλ(fd)
+logN(yd;fd(X), σ2
+d)
+−KL 
+qλ(ud)||p(ud|Zd)
+,(9)
+where we defined qλ(fd) =R
+p(fd|ud)qλ(ud)dudwith
+the variational distribution qλ(ud) =N(ud;˜µd,˜Σd), and
+variational parameters λ={˜µd,˜Σd}D
+d=1. Remember that
+the inducing variables ud,mare Euclidean, i.e., the varia-
+tional distribution qλ(ud)is a Euclidean Gaussian and the
+KL divergence in (9)has a closed-form solution. In this
+case, the training parameters of the GPHLVM are the set
+of inducing inputs {zd,m}M
+m=1, the variational parameters
+ϕandλ, and the hyperparameters Θ(see App. C.2 for the
+derivation of the GPHLVM variational inference process).
+Optimization: As several training parameters of the
+GPHLVM belong to LQ, i.e., the latent variables xnfor
+the MAP estimation, or the inducing inputs zd,mand means
+µnfor variational inference, we need to account for their
+hyperbolic geometry during optimization. To do so, we
+leverage Riemannian optimization methods (Absil et al.,
+2007; Boumal, 2023) to train the GPHLVM. Each step of
+first order (stochastic) Riemannian optimization methods is
+generally of the form,
+ηt←h 
+gradℓ(xt),τt−1
+,
+xt+1←Expxt(−αtηt),
+τt←Pxt→xt+1 
+ηt
+.(10)
+The update ηt∈ TxtMis first computed as a function
+hof the Riemannian gradient grad of the loss ℓ(xt)and
+ofτt−1, the previous update that is parallel-transported to
+the tangent space of the new estimate xt. The estimate
+xtis then updated by projecting the update ηtscaled by
+a learning rate αtonto the manifold using the exponential
+map. The function his equivalent to computing the update
+of the Euclidean algorithm, e.g., ηt←gradℓ(xt)for a
+simple gradient descent. Notice that (10) is applied on a
+product of manifolds when optimizing several parameters.
+In this paper, we used the Riemannian Adam (B ´ecigneul
+& Ganea, 2019) implemented in Geoopt (Kochurov et al.,
+2020) to optimize the GPHLVM parameters.
+4. Incorporating Taxonomy Knowledge
+While we are now able to learn hyperbolic embeddings of
+the data associated to a taxonomy using our GPHLVM, they
+do not necessarily follow the taxonomy graph structure. In
+other words, the manifold distances between pairs of em-
+beddings do not necessarily match the graph distances. To
+overcome this, we introduce graph-distance information as
+inductive bias to learn the embeddings. To do so, we lever-
+age two well-known techniques in the GPLVM literature:priors on the embeddings and back constraints (Lawrence
+& Qui ˜nonero Candela, 2006; Urtasun et al., 2008). Both are
+reformulated to preserve the taxonomy graph structure in
+the hyperbolic latent space as a function of the node-to-node
+shortest paths.
+Graph-distance priors: As shown by Urtasun et al.
+(2008), the structure of the latent space can be modified
+by adding priors of the form p(X)∝e−ϕ(X)/σ2
+ϕto the
+GPLVM, where ϕ(X)is a function that we aim at minimiz-
+ing. Incorporating such a prior may also be alternatively
+understood as augmenting the GPLVM loss ℓwith a regu-
+larization term −ϕ(X). Therefore, we propose to augment
+the loss of the GPHLVM with a distance-preserving graph-
+based regularizer. Several such losses have been proposed
+in the literature, see (Cruceru et al., 2021) for a review.
+Specifically, we define ϕ(X)as the stress loss,
+ℓstress(X) =X
+i<j 
+distG(ci, cj)−distLQ(xi,xj)2,(11)
+where cidenotes the taxonomy node to which the observa-
+tionyibelongs, and distG,distLQare the taxonomy graph
+distance and the geodesic distance on LQ, respectively. The
+loss(11) encourages the preservation of all distances of the
+taxonomy graph in LQ. It therefore acts globally , thus al-
+lowing the complete taxonomy structure to be reflected by
+the GPHLVM. Notice that Cruceru et al. (2021) also survey
+a distortion loss that encourages the distance of the embed-
+dings to match the graph distance by considering their ratio.
+However, this distortion loss is only properly defined when
+the embeddings xiandxjcorrespond to different classes
+ci̸=cj. Interestingly, our empirical results using this loss
+were lackluster and numerically unstable (see App. F).
+Back-constraints: The back-constrained GPLVM
+(Lawrence & Qui ˜nonero Candela, 2006) defines the
+latent variables as a function of the observations, i.e.,
+xn,q=gq(y1. . . ,yn;wq)with parameters {wq}Q
+q=1. This
+allows us to incorporate new observations in the latent
+space after training, while preserving local similarities
+between observations in the embeddings. To incorporate
+graph-distance information into the GPHLVM and ensure
+that latent variables lie on the hyperbolic manifold, we
+propose the back-constraints mapping,
+xn=Expµ0(˜xn)
+with ˜xn,q=NX
+m=1wq,mkRD(yn,ym)kG(cn, cm).(12)
+The mapping (12) not only expresses the similarities be-
+tween data in the observation space via the kernel kRJ, but
+encodes the relationships between data belonging to nearby
+taxonomy nodes via kG. In other words, similar observa-
+tions associated to the same (or near) taxonomy nodes will
+5
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+be close to each other in the resulting latent space. The
+kernel kGis a Mat ´ern kernel on the taxonomy graph follow-
+ing the formulation introduced in (Borovitskiy et al., 2021),
+which accounts for the graph geometry (see also App. E).
+We also use a Euclidean SE kernel for kRD. Notice that the
+back constraints only incorporate local information into the
+latent embedding. Therefore, to preserve the global graph
+structure, we pair the proposed back-constrained GPHLVM
+with the stress prior (11). Note that both kernels are re-
+quired in (12): By defining the mapping as a function of the
+graph kernel only, the observations of each taxonomy node
+would be encoded by a single latent point. When using the
+observation kernel only, dissimilar observations of the same
+taxonomy node would be distant in the latent space, despite
+the additional stress prior, as kRD(yn,ym)≈0.
+5. Experiments
+We test the proposed GPHLVM on three distinct robotics
+taxonomies. First, we model the data from the bimanual
+manipulation taxonomy (Krebs & Asfour, 2022), that is
+a simple binary tree whose nodes represent coordination
+patterns of human bimanual manipulation skills. We use
+a balanced dataset of 60whole-body poses extracted from
+recordings of bimanual household activities, as in (Krebs &
+Asfour, 2022). Each pose is a vector of joint angles yn∈
+R86. Second, we consider a hand grasp taxonomy (Stival
+et al., 2019) that organizes common grasp types into a tree
+structure based on their muscular and kinematic properties
+(see Fig. 1- right ). We use 94grasps of 19types obtained
+from recordings of humans grasping different objects. Each
+grasp is encoded by a vector of wrist and finger joint angles
+yn∈R24. Third, we model data from the whole-body
+support pose taxonomy (Borr `as et al., 2017). Each node
+of this taxonomy graph is a support pose defined by its
+contacts, so that the distance between nodes can be viewed
+as the number of contact changes required to go from a
+support pose to another. We use standing and kneeling poses
+of the datasets in (Mandery et al., 2016a) and (Langenstein,
+2020). The former were extracted from recordings of a
+human walking without hand support, or using supports
+from a handrail or from a table on one side or on both sides.
+The latter were obtained from a human standing up from
+a kneeling position. Each pose is identified with a node of
+the graph of Fig. 9. We test our approach on an unbalanced
+dataset of 100poses ( 72standing and 28kneeling poses),
+where each pose is represented by a vector of joint angles
+yn∈R44. Note that we augment the taxonomy to explicitly
+distinguish between left and right contacts. The main results
+are analyzed in the sequel, while additional experimental
+details, results, and comparisons are given in App. G and H.
+Implementation details: App. G.1 and App. G.2 describe
+the data and hyperparameters used for all experiments. We
+used the hyperbolic SE kernels of § 3.1 for the GPHLVMs,and the classical SE kernel for the Euclidean models. As
+GPLVMs are generally prone to local optima during training,
+they benefit from a good initialization (Bitzer & Williams,
+2010; Ko & Fox, 2011). Here, we initialize the embeddings
+of all GPLVMs by minimizing the stress associated with
+their taxonomy nodes, so that X= min Xℓstresswithℓstress
+as in (11), using the hyperbolic and Euclidean distance for
+the GPHLVMs and GPLVMs, respectively (see App. G.2.2).
+Since our experiments deal with low-data scenarios, all
+models were trained via MAP estimation by maximizing the
+lossℓ=ℓMAP−γℓstress, where γis a parameter balancing
+the two losses (see App. G.2.3 for details).
+Hyperbolic embeddings of taxonomy data: We em-
+bed the taxonomy data of the aforementioned taxonomies
+into2-dimensional hyperbolic and Euclidean spaces using
+GPHLVM and GPLVM. For each, we test the model without
+regularization, with stress prior, and with back-constraints
+coupled with stress prior. Figures 2a-2c, 3a-3c, and 11a-
+11c show the learned embeddings alongside error matrices
+depicting the difference between geodesic and taxonomy
+graph distances for the bimanual manipulation, hand grasps,
+and support pose taxonomies, respectively. As shown in
+Figs. 2a, 3a, 11a, the models without regularization do not
+encode any meaningful distance structure in latent space. In
+contrast, the models with stress prior result in embeddings
+that comply with the taxonomy graph structure: The embed-
+dings are grouped and organized according to the taxonomy
+nodes, the geodesic distances match the graph ones, and ar-
+guably more so in the hyperbolic case (see error matrices in
+Figs. 2b-2c, 3b-3c, 11b-11c). Moreover, the GPHLVM with
+back constraints further organizes the embeddings inside a
+class according to the similarity between their observations
+(see Figs. 2c, 3c, 11c). Note that augmenting the support
+pose taxonomy leads to several groups of the same support
+pose in Figs. 11b-11c, e.g., Fsplits into LFandRF.
+A quantitative comparison of the stress values of the latent
+embeddings with respect to the graph distances confirms that
+a hyperbolic geometry captures better the data structure (see
+Table 1). All regularized GPHLVMs with 2-dimensional
+latent spaces outperform their Euclidean counterparts. In
+general, we observe a prominent stress reduction for the
+Euclidean and hyperbolic 3-dimensional latent spaces com-
+pared to the 2-dimensional ones. This is due to the in-
+crease of volume available to match the graph structure in
+3-dimensional spaces relative to 2-dimensional ones. In-
+terestingly, the hyperbolic models of the bimanual manip-
+ulation and hand grasps taxonomies also outperform the
+Euclidean models with 3-dimensional latent spaces (see
+models in App. G.5). This is due to the fact that the volume
+of balls in hyperbolic space increases exponentially with
+respect to the radius of the ball rather than polynomially as
+in Euclidean space, which translates to significantly more
+space for embedding tree-like data with minimal distortion.
+6
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+(a) Vanilla
+ (b) Stress prior
+ (c) BC + stress prior
+ (d) Adding poses
+ (e) Adding a class
+Figure 2: Bimanual manipulation categories: The first and last two rows show the latent embeddings and examples of interpolating
+geodesics in P2andR2, followed by pairwise error matrices between geodesic and taxonomy graph distances. Background colors indicate
+the GPLVM uncertainty. Added poses (d)and classes TCA right(e)are marked with stars and highlighted with red in the error matrices.
+(a) Vanilla
+ (b) Stress prior
+ (c) BC + stress prior
+ (d) Adding poses
+ (e) Adding a class
+Figure 3: Grasps: The first and last two rows show the latent embeddings and examples of interpolating geodesics in P2andR2, followed
+by pairwise error matrices between geodesic and graph distances. Embeddings colors match those of Fig. 1- right , and background colors
+indicate the GPLVM uncertainty. Added poses (d)and classes Qu,St,MW,andRi(e)are marked with stars and highlighted with red in
+the error matrices.
+7
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+Table 1: Average stress per geometry and regularization. The stress is computed using (11) and averaged over all pairs of training
+embeddings. For models with unseen poses and classes, the stress is computed over all pairs of training and additional embeddings. Lower
+stress values indicate better compliance with the taxonomy structure.
+TAXONOMY MODEL NO REGULARIZER STRESS BC + S TRESS UNSEEN POSES UNSEEN CLASS
+BIMANUAL
+MANIPULATION
+CATEGORIESGPLVM, R22.03±2.15 0 .13±0.33 0 .15±0.31 0 .15±0.29 0.08±0.11
+GPHLVM, L20.98±1.26 0 .11±0.33 0 .09±0.12 0 .09±0.11 0.13±2.15
+GPLVM, R32.39±2.36 0.01±0.01 0.20±0.38 0 .20±0.38 0.05±0.07
+GPHLVM, L31.18±1.35 0 .01±0.03 0 .04±0.08 0 .03±0.07 0 .05±0.07
+GRASPSGPLVM, R27.25±5.40 0 .39±0.41 0 .40±0.44 0 .53±0.77 0 .60±0.73
+GPHLVM, L25.47±4.07 0 .14±0.16 0 .18±0.29 0 .35±0.78 0 .48±0.76
+GPLVM, R38.15±5.85 0.14±0.18 0 .15±0.19 0 .29±0.64 0 .38±0.66
+GPHLVM, L38.37±5.71 0.04±0.08 0 .07±0.18 0 .23±0.68 0 .37±0.72
+SUPPORT
+POSESGPLVM, R23.93±3.97 0 .58±0.94 0 .63±0.94 0 .66±0.99 0.85±1.73
+GPHLVM, L22.05±2.50 0 .51±0.82 0 .53±0.83 0 .56±0.86 0.86±1.70
+GPLVM, R33.76±3.74 0 .24±0.40 0 .29±0.39 0 .30±0.43 0 .55±1.26
+GPHLVM, L33.78±3.71 0 .30±0.38 0 .35±0.45 0 .37±0.50 0 .69±1.36
+This inherent property makes hyperbolic spaces a natural fit
+to embed hierarchical taxonomies with a tree-like structure,
+as the bimanual manipulation and hand grasps taxonomies.
+In the case of the support pose taxonomy, the Euclidean
+models with 3-dimensional latent space slightly outperform
+the3-dimensional hyperbolic embeddings. We attribute this
+to the cyclic graph structure of the taxonomy. Such type of
+structure has been shown to be better embedded in spherical
+or Euclidean spaces (Gu et al., 2019). Interestingly, despite
+the cyclic graph structure of the support pose taxonomy, the
+Euclidean models are still outperformed by the hyperbolic
+embeddings in the 2-dimensional case (see Table 1). This
+suggests that the increase of volume available to match the
+graph structure in hyperbolic spaces compared to Euclidean
+spaces leads to better low-dimensional representations of
+taxonomy data, including those with cyclic graph structure.
+Importantly, a comparative study reported in App. H.1
+shows that the GPHLVM also outperformed vanilla and hy-
+perbolic versions of a V AE to encode meaningful taxonomy
+information in the latent space. For all taxonomies, adding
+the stress regularization (11) to the V AEs helps to preserve
+the graph distance structure, although the embeddings of
+different taxonomy nodes are not as clearly separated as
+in the GPHLVMs. This is illustrated by the higher aver-
+age stress of the V AEs’ latent embeddings and their higher
+reconstruction error compared to the GPHLVMs’ (see Ta-
+ble 13). Finally, we also tested a GPLVM for learning a
+Riemannian manifold (Tosi et al., 2014) of the taxonomy
+data, reported in App. H.2, which is unable to capture the lo-
+cal and global data structure as this model was not originally
+designed for hierarchical discrete data.
+Runtimes: Table 2 shows the runtime measurements for
+the training and decoding phases of GPHLVM and GPLVM.
+The main computational burden arises in the GPHLVM with
+a2-dimensional latent space, which is in sharp contrast with
+the experiments using a 3-dimensional latent space. ThisTable 2: Average runtime for training and decoding phases over 10
+experiments of the hand grasps taxonomy. Training time was mea-
+sured over 500iterations for both models. The implementations
+are fully developed on Python, and the runtime measurements were
+taken using a standard laptop with 32GB RAM, Intel Xeon CPU
+E3-1505M v6 processor, and Ubuntu 20.04 LTS.
+MODEL TRAINING DECODING
+GPLVM, R22.978s±0.082 6 .256ms ±0.314
+GPHLVM, L2414.67s±30.87 2 .74s±0.487
+GPLVM, R33.148s±0.171 6 .774ms ±0.545
+GPHLVM, L36.887s±0.307 10 .34ms±1.05
+increase in computational cost is mainly attributed to the
+2-dimensional hyperbolic kernel (see Table 9 in App. G.3).
+This may be alleviated by reducing the number of samples
+or via more efficient sampling strategies.
+Taxonomy expansion and unseen poses encoding: An
+advantage of back-constrained GPLVMs is their affordance
+to “embed” new observations into the latent space. We
+test the GPHLVM ability to place unseen class instances
+or unobserved taxonomy classes into the latent space, hy-
+pothesizing that their respective embeddings should be po-
+sitioned to preserve the relative distances within the taxon-
+omy graph compared to the other latent points. First, we
+consider back-constrained GPHLVMs with stress prior pre-
+viously trained on a subset of the taxonomies data (i.e., the
+models in Figs. 2c, 3c, 11c) and embedded unseen class in-
+stances. Figures 2d, 3d and 11d show how the new data land
+close to their respective class cluster. Second, we train new
+GPHLVMs for the three taxonomies while withholding all
+data instance from one or several classes (see App. G.2.4).
+We then encode these data and find that they preserve the
+relative taxonomy graph distances when compared to the
+model trained on the full dataset. Although this is accom-
+plished by both models, our GPHLVMs display lower stress
+values (see Table 1).
+8
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+Figure 4: Motions obtained via geodesic interpolation in the back-
+constrained GPHLVM latent space. Top: Grasp taxonomy from
+ring ( Ri) to index finger extension ( IE).Bottom : Support pose
+taxonomy from LFRH toK2RH. Gray circles denote contacts.
+Trajectory generation via geodesics: The geometry of
+the GPHLVM latent space can also be exploited to generate
+trajectories in the latent space by following the geodesic,
+i.e., the shortest path, between two embeddings. In other
+words, our GPHLVM intrinsically provides a mechanism
+to plan motions via geodesics in the low-dimensional latent
+space. Examples of geodesics between two embeddings
+for the three taxonomies are shown in Figs. 2b-2c, 3b-3c,
+and 11b-11c, with the colors along the trajectory matching
+the class corresponding to the closest hyperbolic latent point.
+Importantly, the geodesics in GPHLVMs latent space follow
+the transitions between classes defined in the taxonomy. In
+other words, the shortest paths in the hyperbolic embed-
+ding correspond to the shortest paths in the taxonomy graph.
+For instance, in the case of the support pose taxonomy, the
+geodesic from LFtoF2RHfollows LF→F2→F2RH.
+Straight lines in the Euclidean embeddings are more likely
+to deviate from the graph shortest path, resulting in transi-
+tions that do not exist in the taxonomy, e.g., RFRH →F2in
+the Euclidean latent space of Figs. 11b-11c. Figure 4 and
+App. G.7 show motions resulting from geodesic interpola-
+tion in the GPHLVM latent space. The obtained motions are
+more realistic than those obtained via linear interpolation in
+the GPLVM latent space and as realistic as those obtained
+via VPoser (Pavlakos et al., 2019) (see Figs. 16-17).
+6. Conclusions
+Inspired by the recent developments of human motion tax-
+onomies, we proposed a computational model GPHLVM
+that leveraged two types of domain knowledge: the structure
+of a human-designed taxonomy and a hyperbolic geome-
+try on the latent space which complies with the intrinsic
+taxonomy’s hierarchical structure. Our GPHLVM allows
+us to learn hyperbolic embeddings of the features of the
+taxonomy nodes while capturing the associated hierarchical
+structure. To achieve this, our model exploited the curvature
+of the hyperbolic manifold and the graph-distance informa-
+tion as inductive bias. We showed that these two forms
+of inductive biases are essential to learn taxonomy-aware
+embeddings, encode unseen data, and potentially expand
+the learned taxonomy. Moreover, we reported that vanillaEuclidean approaches underperformed on all the forego-
+ing cases. Finally, we introduced a mechanism to generate
+taxonomy-aware motions in the hyperbolic latent space.
+Note that we assumed that the desired hierarchy is mainly
+provided by the given taxonomy, which we use as inductive
+bias in our model. Although our assumption is that the pro-
+vided taxonomy structure is accurate, our model may also
+be encouraged to discover additional hierarchical structure
+by adjusting the scale γof the stress loss function. This
+is particularly interesting for cases where the provided tax-
+onomy is incomplete or inexact, and thus a lower scale
+may allow the model to prioritize unsupervised discovery
+of a hierarchical structure from the dataset itself, mitigating
+the impact of potential taxonomy errors. An interesting
+extension to our work would be incorporating uncertainty
+measures for the taxonomy graph. If quantifiable measures
+of uncertainty for specific nodes or relationships exist, we
+could integrate them into the stress loss. This would allow
+us to down-weight the influence of unreliable nodes of the
+taxonomy, further improving robustness.
+Our proposed GPHLVM opens the door to potential applica-
+tions in fields like bioinformatics. For instance, GPHLVM
+may uncover hierarchical structures associated to protein
+interactions (Alanis-Lobato et al., 2018) or within biolog-
+ical sequences (Corso et al., 2021; Macaulay et al., 2023).
+Moreover, the availability of a motion taxonomy structure
+empowers the GPHLVM to impact various downstream
+tasks, including robot motion generation, robotic grasping
+and manipulation, human motion prediction, and character
+animation. In particular, the taxonomy prior may compen-
+sate for the lack of data in some of the foregoing applica-
+tions. Unlike other LVMs such as VPoser (Pavlakos et al.,
+2019), GAN-S (Davydov et al., 2022), and TEACH (Athana-
+siou et al., 2022), which are trained on full human motion
+trajectories and thousands of datapoints, our model lever-
+ages the taxonomies as inductive bias to better structure
+the learned embeddings, and uses geodesics as a simple
+and effective motion generator between single poses. How-
+ever, as other models, our geodesic motion generation does
+not use explicit knowledge on how physically feasible the
+generated trajectories are. We plan to investigate how to
+include physics constraints or explicit contact data into the
+GPHLVM to obtain physically-feasible motions. We will
+also work on alleviating the computational cost of the hy-
+perbolic kernel by using more efficient sampling strategies.
+For example, instead of sampling from a Gaussian distribu-
+tion for the approximation (6), we could sample from the
+Rayleigh distribution. This is because complex numbers,
+whose real and imaginary components are i.i.d. Gaussian,
+have absolute value that is Rayleigh-distributed. Finally, we
+will investigate other manifold geometries to accommodate
+more complex structures coming from highly-heterogeneous
+graphs (Giovanni et al., 2022).
+9
+Bringing Motion Taxonomies to Continuous Domains via GPLVM on Hyperbolic manifolds
+Impact Statement
+This paper presents work whose goal is to advance the field
+of Machine Learning by incorporating different types of
+inductive bias in latent variable models. The introduction
+of such inductive bias — particularly those related to taxon-
+omy structures — may lead to more explainable Machine
+Learning models.
+Acknowledgements
+NJ and TA were supported by the Carl Zeiss Foundation
+through the JuBot project and by the European Union’s Hori-
+zon Europe Framework Programme under grant agreement
+No 101070596 (euROBIN). MGD collaborated in this work
+during his PhD sabbatical at the Bosch Center for Artificial
+Intelligence (BCAI). VB was supported by an ETH Z ¨urich
+Postdoctoral Fellowship.
+References
+Abbasi, B., Noohi, E., Parastegari, S., and ˇZefran, M. Grasp
+taxonomy based on force distribution. In IEEE Inter-
+national Symposium on Robot and Human Interactive
+Communication (RO-MAN) , pp. 1098–1103, 2016. doi:
+10.1109/ROMAN.2016.7745245.
+Abramowitz, M. and Stegun, I. A. Handbook of mathemat-
+ical functions with formulas, graphs, and mathematical
+tables , volume 55. US Government printing office, 1964.
+doi: 10.5555/1098650.
+Absil, P.-A., Mahony, R., and Sepulchre, R. Optimization
+Algorithms on Matrix Manifolds . Princeton University
+Press, 2007. URL https://press.princeton.
+edu/absil .
+Alanis-Lobato, G., Mier, P., and Andrade-Navarro, M. The
+latent geometry of the human protein interaction network.
+Bioinformatics , 34(16):2826–2834, 2018. doi: 10.1093/
+bioinformatics/bty206.
+Athanasiou, N., Petrovich, M., Black, M. J., and Varol, G.
+Teach: Temporal action compositions for 3d humans. In
+International Conference on 3D Vision (3DV) , pp. 414–
+423, 2022. doi: 10.1109/3DV57658.2022.00053.
+Balasubramanian, S., Melendez-Calderon, A., Roby-Brami,
+A., and Burdet, E. On the analysis of movement smooth-
+ness. Journal of NeuroEngineering and Rehabilitation ,
+12(112), 2015. doi: 10.1186/s12984-015-0090-9.
+Bitzer, S. and Williams, C. K. I. Kick-starting
+GPLVM optimization via a connection to metric
+mds. In Proceedings of the NIPS 2010 Work-
+shop on Challenges of Data Visualization , 2010.
+URL https://citeseerx.ist.psu.edu/document?repid=rep1&type=pdf&doi=
+ee20fa087731a2b2f90d196e98aa959a196cfeb5 .
+Borovitskiy, V ., Terenin, A., Mostowsky, P., and
+Deisenroth, M. P. Mat ´ern Gaussian processes
+on Riemannian manifolds. In Neural Informa-
+tion Processing Systems (NeurIPS) , pp. 12426–
+12437, 2020. URL https://proceedings.
+neurips.cc/paper/2020/file/
+92bf5e6240737e0326ea59846a83e076-Paper.
+pdf.
+Borovitskiy, V ., Azangulov, I., Terenin, A., Mostowsky,
+P., Deisenroth, M., and Durrande, N. Mat ´ern Gaus-
+sian processes on graphs. In Intl. Conf. on Artificial
+Intelligence and Statistic (AISTATS) , pp. 2593–2601,
+2021. URL https://proceedings.mlr.press/
+v130/borovitskiy21a.html .
+Borr `as, J., Mandery, C., and Asfour, T. A whole-body
+support pose taxonomy for multi-contact humanoid robot
+motions. Science Robotics , 2(13), 2017. doi: 10.1126/
+scirobotics.aaq0560.
+Bose, J., Smofsky, A., Liao, R., Panangaden, P., and
+Hamilton, W. Latent variable modelling with hy-
+perbolic normalizing flows. In International Confer-
+ence on Machine Learning (ICML) , pp. 1045–1055,
+2020. URL https://proceedings.mlr.press/
+v119/bose20a.html .
+Boumal, N. An introduction to optimization on smooth
+manifolds . Cambridge University Press, 2023. URL
+http://www.nicolasboumal.net/book .
+Bullock, I. M., Ma, R. R., and Dollar, A. M. A hand-centric
+classification of human and robot dexterous manipulation.
+IEEE Transactions on Haptics , 6(2):129–144, 2013. doi:
+10.1109/TOH.2012.53.
+B´ecigneul, G. and Ganea, O.-E. Riemannian adaptive
+optimization methods. In International Conference on
+Learning Representations (ICLR) , 2019. URL https:
+//openreview.net/pdf?id=r1eiqi09K7 .
+Chami, I., Gu, A., Chatziafratis, V ., and R ´e, C. From
+trees to continuous embeddings and back: Hy-
+perbolic hierarchical clustering. In Neural Infor-
+mation Processing Systems (NeurIPS) , pp. 15065–
+15076, 2020. URL https://proceedings.
+neurips.cc/paper/2020/file/
+ac10ec1ace51b2d973cd87973a98d3ab-Paper.
+pdf.
+Chavel, I. Eigenvalues in Riemannian geometry . Academic
+press, 1984.
+10

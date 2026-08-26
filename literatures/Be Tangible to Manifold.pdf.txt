@@ -1,0 +1,492 @@
+Be Tangential to Manifold: Discovering
+Riemannian Metric for Diffusion Models
+Shinnosuke Saito1and Takashi Matsubara2,1
+1Hokkaido University2AI Lab, CyberAgent, Inc.
+saitou.shinnosuke.y0@elms.hokudai.ac.jp
+matsubara_takashi@cyberagent.co.jp
+Abstract. Diffusion models are powerful deep generative models, but
+unlike classical models, they lack an explicit low-dimensional latent space
+that parameterizes the data manifold. This absence makes it difficult
+to perform manifold-aware operations, such as geometrically faithful in-
+terpolation or conditional guidance that respects the learned manifold.
+We propose a training-free Riemannian metric on the noise space, de-
+rived from the Jacobian of the score function. The key insight is that
+the spectral structure of this Jacobian separates tangent and normal
+directions of the data manifold; our metric leverages this separation to en-
+courage paths to stay tangential to the manifold rather than drift toward
+high-density regions. To validate that our metric faithfully captures the
+manifold geometry, we examine it from two complementary angles. First,
+geodesics under our metric yield perceptually more natural interpolations
+than existing methods on synthetic, image, and video frame datasets.
+Second, the tangent–normal decomposition induced by our metric pre-
+vents classifier-free guidance from deviating off the manifold, improving
+generation quality while preserving text-image alignment.
+Keywords:Diffusion Models·Manifold Hypothesis·Riemannian Ge-
+ometry·Image Interpolation·Classifier-Free Guidance
+1 Introduction
+Diffusion models are a class of deep generative models (DGMs) that have shown
+a remarkable capability to generate high-fidelity, diverse content [33,73,81]. A key
+theoreticallensforunderstandingandimprovingDGMsisthemanifold hypothesis,
+which states that real-world data (e.g., images) are concentrated around a low-
+dimensional manifold embedded in the high-dimensional data space [8,20]. Under
+this hypothesis, DGMs are understood to learn not only the data distribution
+but also its underlying manifold, either explicitly or implicitly [54].
+Among DGMs, variational autoencoders (VAEs) [46] and generative adversar-
+ial networks (GANs) [24] possess a low-dimensional latent space, which serves as
+an explicit parameterization of the data manifold [3]. On this latent space, one
+can define a Riemannian metric by pulling back the data-space metric through
+the decoder [25], enabling geometrically meaningful operations. For example,
+arXiv:2510.05509v3  [cs.CV]  17 Jul 2026
+2 S. Saito and T. Matsubara
+Fig. 1: A prominent example.(left) Interpolation paths on a C-shaped distribution.
+(right) A plot of the probability density transitions for interpolation paths. LERP
+cuts through a low-density region. SLERP deviates from the manifold. Density-based
+interpolation approaches a high-density region and traverses it, not preserving the
+probabilities of the endpoints.Oursruns parallel to the manifold, yielding natural
+transitions with preserved endpoint probabilities.
+traversing the latent space along geodesics yields interpolations that are faithful
+to the intrinsic geometric structure of the data [5,6,13,75]. However, diffusion
+models lack such a low-dimensional latent space; their noise space has the same
+dimensionality as the data space, making it nontrivial to define a meaningful
+pullback metric.
+Some previous studies have attempted to define a Riemannian metric for
+diffusion models based on the density of noisy samples or the direction to
+the manifold (see Fig. 1) [7,98]. Geodesics under these metrics, however, may
+overly approach the center of the data distribution, resulting in over-smoothed
+images [39]. The fundamental issue is that density or direction only tell uswhere
+samples concentrate, but nothowthe manifold is oriented in the ambient space.
+This raises a natural question:can we define a Riemannian metric for diffusion
+models that directly reflects the intrinsic geometry of the data manifold, rather
+than its density?
+Fig. 2: A conceptual illustration.
+Our metric is derived from the Jaco-
+bianJxtof the score function sθ, whose
+spectralstructureseparatestangentand
+normal directions, TxtMtandNxtMt,
+of the data manifoldM t.We answer this affirmatively. We build
+on prior observations that the Jacobian
+of the score function already encodes this
+geometry: its spectral structure separates
+the tangent and normal directions of the
+data manifold (illustrated conceptually in
+Fig. 2) [85,91]. Building on this insight,
+we propose a Riemannian metric on the
+noise space, defined as the pullback of the
+Euclidean metric through the score func-
+tion. This metric assigns high cost to move-
+ment along normal directions and low cost
+along tangent directions, thereby encour-
+aging paths to stay tangential to the data
+Discovering Riemannian Metric for Diffusion Models 3
+manifold. Because it is constructed solely from the Jacobian of a pre-trained
+score function, it requires no additional training or architectural modifications.
+The contribution of this work is the proposed Riemannian metric itself, which
+turns this known tangent–normal characterization into a concrete geometric
+foundation for understanding the data manifold in diffusion models and designing
+manifold-aware operations. We examine the metric from two complementary
+angles. Together, these angles serve to validate that the metric faithfully cap-
+tures the geometry of the data manifold and to demonstrate its practical utility.
+(i) Global geometry through interpolation(Secs. 4.1 to 4.3): Geodesics
+under our metric should stay on or run parallel to the manifold, producing per-
+ceptually natural transitions. Experiments on synthetic, image, and video frame
+datasets confirm this.(ii) Local geometry through guidance correction
+(Sec. 4.4): The tangent–normal decomposition induced by our metric should
+prevent classifier-free guidance (CFG) [34] from pushing samples off the manifold.
+The guidance correction consistently improves FID while maintaining CLIP Score,
+and the improved quality transfers to distilled models at no additional overhead.
+2 Related Work
+Riemannian Geometry of Deep Generative Models.In VAEs and GANs,
+the latent space parameterizes the data manifold, and linear traversals in this
+space are widely used for editing semantic attributes of generated images [23,27,
+30,61,67,77,78,84,92,105]. However, as real-world data distributions are skewed
+and heterogeneous, linear manipulations often fall short, motivating nonlinear
+approaches [1,2,14,15,37,43,52,71,89,90]. A principled way to handle such
+nonlinearity is to equip the latent space with a Riemannian metric [25]. Some
+methods learn a metric through additional networks, which may overwrite the
+originalmanifoldstructure[4,50,83,95].Othersconstructthepullbackmetricfrom
+the Euclidean metric on the data space through the decoder (or the generator) of
+a pre-trained model without additional training [5,6,13,18,75]. Our work follows
+the latter, training-free approach, but extends it to diffusion models, whose noise
+space is not low-dimensional.
+Data Manifold in Diffusion Models.Diffusion models learn a score function
+sθ(xt, t), which iteratively denoises noisy samples backward in time from t=Tto
+t= 0toformthedatadistribution[33,73,80 –82].Aspaceofnoisysamplesat t >0
+isoftenreferredtoasanoise space.Diffusionmodelshavebeenshowntoimplicitly
+learn the data manifold through this denoising process [22,65,68,88,94,99]. One
+common assumption is that high-density regions of the learned distribution
+correspond to the data manifold, but recent studies have shown that image
+likelihood is negatively correlated with perceptual detail: images in high-density
+regions are often over-smoothed, whereas those in lower-density regions may
+contain richer textures [39]. From a different perspective, several studies have
+estimated the local intrinsic dimension of the data manifold [35,36,38,85,91].
+Their key insight is that the Jacobian of the score function exhibits a rank
+4 S. Saito and T. Matsubara
+deficiency corresponding to the codimension of the data manifold, or in practice
+a sharp spectral gap, which separates the normal directions of the data manifold
+from the tangent directions [85,91]. Rather than relying on density, we build
+upon this spectral characterization to define a Riemannian metric on the noise
+space of a pre-trained diffusion model.
+Interpolation in Diffusion Models.Although latent diffusion models [73]
+operate on the latent space of an autoencoder, this space is designed for percep-
+tual compression rather than semantic representation, and simple interpolations
+therein do not yield coherent transitions. Interpolation methods in the noise
+space can be broadly categorized into four groups. (i) Closed-form methods
+operate directly in the noise space. LERP [33] treats it as a flat Euclidean space,
+leading to small norms and loss of detailed features. SLERP [79,81] preserves
+norms along a hypersphere, and other variants adjust norms by other heuris-
+tics [10,74,102]. (ii) Surrogate latent-space methods exploit intermediate layers
+of the diffusion network [31,47,62,63], but skip connections allow information to
+bypass these layers, limiting their ability to serve as self-contained representations.
+(iii) Training-dependent methods employ additional networks or modify the ar-
+chitecture for interpolation [26,28,44,58,69,76,93,96,100], but require additional
+training and cannot be applied to arbitrary pre-trained models. (iv) Riemannian
+metric-based methods define a geometry on the noise space without additional
+training. GeodesicDiffusion [98] defines a conformal metric using the inverse
+density of noisy samples, and Azeglio and Bernardo [7] propose a metric inspired
+by the Fisher information matrix (FIM); both guide geodesics toward high-density
+regions, as examined for normalizing flows [83] and energy-based models [9]. How-
+ever, high-density regions do not necessarily correspond to perceptually detailed
+images [39], which can result in over-smoothed and cartoonish interpolations.
+Although some studies draw inspiration from statistical manifolds, it remains
+unclear what geometric structures their methods leverage [40,55]. Our metric
+falls in this category but differs fundamentally: rather than favoring high-density
+regions, it leverages the spectral structure of the score Jacobian to keep geodesics
+tangential to the data manifold, keeping the density level.
+Guidance Methods.One can condition the denoising process on a text prompt
+[73]. Classifier-free guidance (CFG) amplifies this condition to make generated
+images more faithful to text prompts [34], and the negative prompt suppresses
+concepts specified by a complementary prompt [73]. Some guidance methods
+additionally utilize external information [12,72,86]. However, it is well known
+that these guidance methods can distort the learned data manifold, leading to
+visually unnatural outcomes. Recent studies have attempted to mitigate this
+issue. CFG++ [17] uses the unconditional score instead of the CFG-based score
+for renoising steps, while TCFG [48] projects the unconditional score onto the
+subspace shared with the conditional one via SVD. Although these methods are
+motivated by the existence of the data manifold, they do not formally define
+or characterize its geometry, and their corrections remain heuristic. Our metric
+Discovering Riemannian Metric for Diffusion Models 5
+providessuchanexplicitgeometriccharacterization,whichenablesageometrically
+grounded correction that decomposes the guidance term into tangent and normal
+components and suppresses the latter.
+3 Method
+3.1 Proposed Riemannian Metric
+Definition of Proposed Metric.We define a Riemannian metric on the noise
+space that captures the local geometry of the data manifold through the score
+function. See Appendix A.1 for background. Let xtbe a point in the noise space
+RDat time t, and v, w∈T xtRDbe tangent vectors to RDatxt. Let sθ(xt, t)
+be the score function of a pre-trained diffusion model parameterized by θ. We
+propose the following Riemannian metric at timet:
+gxt(v, w) :=⟨J xtv, Jxtw⟩=v⊤J⊤
+xtJxtw=v⊤Gxtw, (1)
+where Jxt=∇xtsθ(xt, t)is the Jacobian of the score function sθ(·, t)atxt, and
+Gxt=J⊤
+xtJxtis the matrix representation of the metric gxt. This metric is the
+pullback s∗
+θIof the Euclidean metric Ion the score space RDthrough the score
+function sθ, since v⊤Gxtw= (Jxtv)⊤I(Jxtw). By construction, Gxtis symmetric
+and positive semi-definite; we show below that it is positive definite in practice.
+Interpretation.Stanczuk et al. [85] found that the score function sθ(xt, t)
+points orthogonally towards the data manifold Mtcontaining the data point
+xt, and that this orthogonality becomes more prominent as tapproaches zero.
+Ventura et al. [91] further investigated the Jacobian Jxtand observed that its
+rank deficiency (for clean samples on a low-dimensional manifold) or spectral
+gap (for real-world data) reflects the intrinsic dimension of the data manifold.
+Intuitively, Jxtshrinks along tangent directions and remains large along normal
+directions, as shown in Fig. 2.
+More precisely, let Mtbe the data manifold at time tlearned by a diffusion
+model, and xt∈ M tbe a point on the data manifold. Define the tangent space
+TxtMtas the d-dimensional subspace ( d≪D) spanned by the right singular
+vectors of Jxtcorresponding to small singular values; the normal space NxtMt
+is the orthogonal complement spanned by those corresponding to large singular
+values. Then, TxtRD=TxtMt⊕ NxtMt. From Eq. (1), the squared metric norm
+of a tangent vectorvto the ambient noise spaceRDisgxt(v, v) =∥J xtv∥2
+2.
+Proposition 1. Among tangent vectors vof a fixed Euclidean norm, those with
+the smallest squared metric norm gxt(v, v) =∥Jxtv∥2
+2lie in the tangent space
+TxtMtto the data manifoldM t.
+Consequently, our metric assigns shorter lengths to paths that stay on or run
+parallel to the data manifoldM t. See Appendix B.1 for a detailed derivation.
+6 S. Saito and T. Matsubara
+Geodesics.A geodesic is a shortest path under a given metric, obtained by
+minimizing the energy functional E[γ](see Appendix A.1 and Lee [49] for details).
+Letu∈[0,1]parameterize a curve γ:u7→γ (u). The energy functional with our
+metric is:
+E[γ] =1
+2R1
+0gγ(u)(γ′(u), γ′(u))du=1
+2R1
+0⟨Jγ(u)γ′(u), J γ(u)γ′(u)⟩du
+=1
+2R1
+0∥Jγ(u)γ′(u)∥2
+2du=1
+2R1
+0∥∂
+∂usθ(γ(u), t)∥2
+2du.(2)
+This expression admits two complementary readings. The second-last term shows
+that geodesics minimize the squared metric norm ∥Jxtv∥2
+2of the velocity v=γ′(u)
+at each point xt=γ(u)along the path, which by Proposition 1 encourages the
+path to stay tangential to the data manifold. The last term, obtained by the
+chain rule, shows that geodesics equivalently minimize the squared change in
+the score function sθalong the path. Since our metric is the pullback metric
+through sθ, geodesics are mapped to straight lines in the score space. Because
+the score function encodes the gradient of the log-density, a path with minimal
+score variation maintains a consistent relationship with the density landscape:
+it neither approaches nor deviates from high-density regions, but runs parallel
+to the manifold at a consistent distance. This provides a geometric explanation
+for why our geodesics preserve endpoint probabilities (Fig. 1 (right)). Moreover,
+considering that gradients of log-likelihoods with respect to model parameters
+have been used as semantic representations of inputs [11,29,97], geodesics that
+minimize score variation can also be viewed as preserving semantic closeness
+between samples.
+Given a geodesic, the distance between its endpoints is the length of the
+geodesic, computed asd g(γ(0), γ(1)) =R1
+0p
+gγ(u)(γ′(u), γ′(u))du.
+Theoretical Remarks.Our metric Gxt=J⊤
+xtJxtcaptures the full spectral
+structureoftheJacobian,thatis,alltangentandnormaldirections.Thiscontrasts
+with the FIM-based metric λsθs⊤
+θ+I[7], which captures only the rank-1 direction
+of the score sθand thus respects only one normal direction. The distinction is
+essential when the codimension of the data manifold is greater than one, which
+is the typical case for real-world data (e.g., images encoded in a representation
+space of tens of thousands of dimensions exhibit intrinsic dimensionality of a few
+hundred [85,91]). Thus, practical diffusion models operate in a regime where the
+tangent–normal distinction is meaningful.
+Diffusion models learn the score function sθdirectly rather than the log-
+density logp t, and consequently, Jxtis not exactly symmetric. Even then, Jxt
+typically exhibits a spectral gap, and the decomposition into TxtMt⊕ NxtMtin
+Proposition 1 holds approximately.
+TheJacobian Jxtisdegenerateonideallycleandatalyingonalow-dimensional
+manifold at t= 0, but for real-world data it is full-rank with a sharp spectral
+gap. In practice, operations are performed at an intermediate time t >0, where
+samples are corrupted by noise and the Jacobian Jxtis full-rank and exhibits a
+moderate spectral gap, ensuring that gxtis positive definite and thus a proper
+Riemannian metric.
+Discovering Riemannian Metric for Diffusion Models 7
+Algorithm 1Interpolation
+Require: Samples x(0)
+0,x(1)
+0, score sθ, time τ,
+pointsN, iterationsK
+1:{x(0)
+τ, x(1)
+τ}←{DDIM-Fwd(x(i)
+0, τ)}i∈{0,1}
+2:{x(ui)
+τ}N−1
+i=1←{SLERP(x(0)
+τ, x(1)
+τ, ui)}N−1
+i=13:fork= 1toKdo
+4:ComputeEvia Eq. (3)
+5:Update{x(ui)
+τ}N−1
+i=1to minimizeE
+6:end for
+7:{ˆx(ui)
+0}N
+i=0← {DDIM-Bwd(x(ui)
+τ, τ)}N
+i=0
+8:return{ˆx(ui)
+0}N
+i=0
+Fig. 3:Illustration of geodesic-based in-
+terpolation
+See Appendix B.1 for further details, including a discussion of regularization
+and alternative construction.
+3.2 From Metric to Algorithms
+Geodesic-Based Interpolation.To use our metric for interpolation, we com-
+pute a geodesic in the noise space at a fixed time t=τ >0by discretizing the
+path and minimizing the resulting energy. We approximate the path γasN+1
+points x(ui)
+τwith u0= 0, uN= 1, ∆u= 1/N, and x(ui)
+τ=γ(ui). The energy
+functionalE[γ]in Eq. (2) is then approximated as:
+E[γ]≈1
+2∆uPN−1
+i=0∥(sθ(x(ui+1)
+τ, τ)−s θ(x(ui)
+τ, τ))∥2
+2. (3)
+Given two samples x(0)
+τandx(1)
+τat time τ, the geodesic is obtained by minimizing
+Eq. (3) with respect to the intermediate points x(u1)
+τ, . . . , x(uN−1)
+τ. The distance
+is thend g(x(0)
+τ, x(1)
+τ)≈PN−1
+i=0∥(sθ(x(ui+1)
+τ, τ)−s θ(x(ui)
+τ, τ))∥ 2.
+This follows common practice in diffusion models, where interpolation is
+performed in the noise space rather than directly in the data space at t= 0
+(see Algorithm 1 and Fig. 3). Given a pair of clean samples x(0)
+0andx(1)
+0, we
+first map them to noisy samples x(0)
+τandx(1)
+τat the fixed time τusing DDIM
+Inversion [60]. We then compute the geodesic path between them by minimizing
+Eq. (3), and map the interpolated noisy samples x(u)
+τforu=u0, . . . , u Nback to
+clean samples x(u)
+0using the deterministic denoising process (see Appendix A.2).
+Here,x(u1)
+0, . . . , x(uN−1)
+0serve as interpolated samples. The optimization is more
+computationally expensive than closed-form methods such as LERP or SLERP,
+but comparable to other metric-based methods [7,98] that also require solving
+an optimization problem, as summarized in Appendices C.1 and C.2.
+Metric-Based Guidance Correction.Complementary to global geodesics,
+our metric also provides a local tangent–normal decomposition at each point
+in the noise space. This decomposition provides a metric-based way to correct
+perturbations that push a sample off the data manifold. We apply this to classifier-
+free guidance (CFG), where the guidance term is known to distort the learned
+manifold [17,48] (see Algorithm 2 and Fig. 4).
+8 S. Saito and T. Matsubara
+Algorithm 2Guidance Correction
+Require:x T∼N(0, I), condition c, CFG scale
+w, weightλ
+1:fort=Tto1do
+2:s←s θ(xt, t, c)
+3:˜s←˜s θ(xt, t, c, w)▷Eq. (17)
+4:∆s←˜s−s
+5:Compute∆ˆs∗via Eq. (5)
+6:ˆs←s+∆ˆs∗
+7:x t−1←DDIMStep(x t,ˆs)
+8:end for
+9:returnx 0
+Fig. 4:Illustration of metric-based guid-
+ance correction
+Diffusion models generate samples by iteratively updating a noisy sample xt
+asxt−1=xt+ηtsθ(xt, t), where the noise term is omitted for simplicity, and ηt
+is the update size depending on time t. CFG modifies this by adding a guidance
+term ∆s(xt, c)tosθ(xt, t), where cis some condition. Our correction adjusts this
+guidance term to balance two objectives: the corrected sample should remain
+close to the guided sample in Euclidean distance, while staying close to the
+unguided sample under our metric g, i.e., on the data manifold. Formally, we
+solve:
+∆ˆs∗=arg min
+∆ˆsdE(xt+ηt(sθ+∆s), x t+ηt(sθ+∆ˆs))2+λd g(xt+ηtsθ, xt+ηt(sθ+∆ˆs))2,
+(4)
+whered Eis the Euclidean distance.
+For tractability, we evaluate dgat time trather than t−1(valid because the
+manifold changes smoothly between adjacent timesteps) and approximate the
+path integral withN= 1(sufficient for a local correction). Absorbingη tintoλ,
+the corrected guidance ∆ˆs∗is then given by( I+λGxt)∆ˆs∗=∆s. We solve this
+by the conjugate gradient (CG) method with ∆sas the initial point, using only
+a single update step to limit computational overhead:
+∆ˆs∗=∆s+ϵ⊤ϵ
+ϵ⊤(I+λG xt)ϵϵforϵ=∆s−(I+λG xt)∆s. (5)
+Since Gxt=J⊤
+xtJxt, multiplication by Gxtcan be decomposed into a Jacobian-
+vector product followed by a vector-Jacobian product. We approximate the
+Jacobian-vector product Jxtvvia a finite difference( sθ(xt+hv, t)−sθ(xt, t))/h
+for a small h > 0, and approximate the vector-Jacobian product J⊤
+xtvin the
+same way under the empirically supported assumption that Jxtis approximately
+symmetric. In total, the correction requires four additional evaluations of sθ.
+With CFG or negative prompt, each denoising step involves two evaluations of sθ,
+so the computational cost is approximately three times that without correction.
+Since our correction modifies only the guidance term, it can be applied during
+distillation, so that the improved quality is inherited by the student model at no
+additional inference cost.
+Discovering Riemannian Metric for Diffusion Models 9
+4 Experiments
+Our primary contribution is the Riemannian metric defined in Eq. (1). To validate
+that it faithfully captures the geometry of the data manifold, we examine its
+global properties through interpolation (Secs. 4.1 to 4.3) and its local properties
+through guidance correction (Sec. 4.4).
+4.1 Synthetic 2D Data
+Toillustratethebehaviorofgeodesicsunderourmetric,weconductedexperiments
+on a synthetic C-shaped distribution in 2D (see Fig. 1 and Appendix D.1 for
+details). We trained a DDPM [33] with a SiLU MLP backbone [19] on 100,000
+samples from this distribution with T= 50steps and obtained interpolations at
+τ= 0.02T= 1via DDIM Inversion. As shown in Fig. 1 (left), LERP traverses
+through low-density regions, SLERP slightly deviates from the manifold, and
+density-based interpolation [98] approaches a high-density region, not preserving
+the endpoint probabilities. In contrast, our geodesic runs parallel to the data
+manifold, preserving the endpoint probabilities.
+Table 1:Resultson
+synthetic 2D data
+Method Std.↓
+LERP 0.1606
+SLERP 0.0833
+Density 0.1073
+Ours0.0701To quantify this, we sampled 50 pairs of endpoints
+and evaluated the standard deviation of the density
+p(x)along each interpolation path, summarized in
+Tab. 1. A smaller value indicates a more consistent
+distance from the data manifold. Our metric achieves
+the lowest standard deviation, which confirms that
+geodesics under our metric maintain a consistent re-
+lationship with the manifold, as predicted by the
+analysis in Sec. 3.
+4.2 Image Interpolation
+Experimental Setup.Following prior work [74,98,102], we use Stable Diffusion
+v2.1-base [73] as the backbone with T= 50timesteps and N−1 = 9interpolated
+images.WedonotuseCFGornegativepromptsforDDIMinversionanddenoising.
+For the geodesic computation, we use negative prompts and treat the resulting
+update ˜sθ(i.e., Eq. (18) in Appendix A.2) as the score function sθfor computing
+the Jacobian Jxtand thus the metric gxt. We evaluate on four benchmark
+datasets: the animation and metamorphosis subsets of MorphBench (MB(A) and
+MB(M)) [100], Animal Faces-HQ (AF) [16], and CelebA-HQ (CA) [41]. For AF
+and CA, we curate 50 image pairs with LPIPS [101] below 0.6 to ensure semantic
+similarity, following Yu et al. [98]. Further details are provided in Appendix D.2.
+We compare against LERP [33], SLERP [81], NAO [74], NoiseDiffusion
+(NoiseDiff) [102], FIM-based metric [7], and GeodesicDiffusion (GeoDiff) [98].
+We use default settings for NAO, NoiseDiff, and GeoDiff based on their official
+codes. Due to the lack of official code, we re-implemented the FIM-based metric
+with the same backbone as ours. For fair comparison, LERP, SLERP, FIM-based
+metric, and our proposed metric use the DDIM Scheduler [81] and operate in
+10 S. Saito and T. Matsubara
+the noise space at τ= 0.6T, following Yu et al. [98]. For FIM-based metric and
+our proposed metric, each path was initialized with SLERP and updated for 500
+iterations using Adam optimizer [45] with a learning rate of10−3, decayed with
+cosine annealing to10−4[56]. We also adopted the prompt adjustment of Yu et
+al. [98], which optimizes the text embedding similarly to textual inversion [21]; see
+Appendices C.1, C.2, and C.3 for details on comparison methods, computational
+overhead, and prompt adjustment.
+We evaluate interpolation quality using four measures. (1) Perceptual Path
+Length (PPL) [42] is the sum of LPIPS between adjacent images, assessing the
+directness of transitions. (2) Perceptual Distance Variance (PDV) [100] is the
+standard deviation of adjacent LPIPS, assessing the uniformity of transitions.
+(3)FréchetInceptionDistance(FID)[32]isadistributionaldistancebetweeninput
+and interpolated images via the features of Inception v3 [87]. (4) Reconstruction
+Error (RE) is the mean squared error between the input endpoints and the
+reconstructed endpoints. PPL, PDV, and FID are standard measures for image
+interpolation [74,98,102]; we additionally report RE to verify whether the
+endpoints are faithfully preserved. We follow the evaluation protocol of prior
+work, including the sample sizes for FID computation (900 interpolated images
+vs. 200 reference images on AF and CA). While none of these measures directly
+evaluates manifold faithfulness, consistent improvement across all four provides
+converging evidence. We further complement these indirect measures with ground-
+truth evaluation in video frame interpolation (Sec. 4.3).
+Results.We summarize the quantitative results in Tab. 2. Our metric achieves
+the best scores on all datasets for PPL, FID, and RE, and records the best PDV
+on MB(A) with a close second-best on the others.
+Qualitative results in Figs. 5 and 6 reveal further differences. LERP yields
+blurry interpolations. NAO and NoiseDiff produce vivid textures absent in the
+originals and exhibit large reconstruction errors, as their norm adjustments alter
+the endpoints. SLERP produces sharper results than LERP but lags behind
+geodesic-based methods. The most competitive baseline is GeoDiff, which ranks
+second on most metrics but produces over-smoothed images that lack fine details.
+Thisisconsistentwiththefindingthatsampledensityisnegativelycorrelatedwith
+perceptual detail [39]: density-based metrics guide geodesics toward high-density
+regions, sacrificing texture. FIM-based metric yields cartoonish results with non-
+smooth transitions, as it is nearly singular (rank-1) with the default λ= 1,000.
+In contrast, our metric preserves fine details of the input images throughout the
+interpolation. We confirmed that these trends hold with a different backbone
+(Stable Diffusion v2.0-base); see Appendix E for complementary results, including
+ablation studies and visualizations of the spectral gap.
+4.3 Video Frame Interpolation
+Experimental Setup.To complement the indirect measures of the previous
+section, we evaluate methods on video frame interpolation using MSE and LPIPS

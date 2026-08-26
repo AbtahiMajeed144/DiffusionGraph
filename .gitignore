@@ -1,0 +1,11 @@
+references/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+data/
+results/
+*.pkl
+*.pt
+*.pth
+.venv/
+venv/
