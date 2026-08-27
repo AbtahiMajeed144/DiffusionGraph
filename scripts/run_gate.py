@@ -100,12 +100,23 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--profile", choices=["local_poc", "local_smoke", "rtx5090"], default="local_poc")
     p.add_argument("--skip-permutation", action="store_true", help="skip the label-permutation control (faster iteration only -- never for a real gate report)")
+    p.add_argument(
+        "--evaluators", default=None,
+        help="Comma-separated evaluator names, overriding the profile's default "
+             "(e.g. resnet50,vit_base,clip_zeroshot). Use this when the profile's "
+             "default architecture doesn't match what's actually been trained on "
+             "this machine -- e.g. local_smoke defaults to resnet18/vit_small "
+             "(the 4GB-card architectures), which won't exist as checkpoints on a "
+             "machine that only ran the rtx5090 training (resnet50/vit_base)."
+    )
     args = p.parse_args()
 
     cfg = get_profile(args.profile)
+    if args.evaluators is not None:
+        cfg.evaluator_names = tuple(n.strip() for n in args.evaluators.split(","))
     out_dir = RESULTS_DIR / "gate" / cfg.run_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"=== Phase 1 gate: profile={args.profile} run_name={cfg.run_name} ===")
+    print(f"=== Phase 1 gate: profile={args.profile} run_name={cfg.run_name} evaluators={cfg.evaluator_names} ===")
 
     denoiser_cond = EDMDenoiser(cfg.edm_checkpoint_cond, device=cfg.device)
     denoiser_uncond = EDMDenoiser(cfg.edm_checkpoint_uncond, device=cfg.device)
