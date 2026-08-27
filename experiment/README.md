@@ -41,9 +41,28 @@ install exactly that yourself.
 6. `scripts/validate_evaluators.py --profile rtx5090` — clean-CIFAR-10
    accuracy sanity check before trusting any of this for routing.
 7. `scripts/run_gate.py --profile rtx5090` — the actual Phase 1 gate: all
-   45 CIFAR-10 pairs, 3 noise levels (`routing_sigmas`), 5 seeds, full
-   label-permutation control. Produces
-   `results/gate/phase1_gate_full/decision_memo.json` and `figures/`.
+   45 CIFAR-10 pairs, 3 noise levels (`routing_sigmas`), 3 seeds (matches
+   SEED §3.3's own stated minimum), full label-permutation control.
+   Produces `results/gate/phase1_gate_full/decision_memo.json` and
+   `figures/`. **This step is resumable** — see below.
+
+## Resuming after an interruption
+
+The gate sweep (step 7) is a long, multi-hour run and checkpoints itself:
+every `(real/permuted, path_type, sigma_tau, class_pair, seed)` combination
+is saved to `results/gate/<run_name>/cache/` immediately after it's
+computed. If the process dies, gets disconnected, or you kill it on
+purpose, **just re-run the exact same command** —
+`python scripts/run_gate.py --profile rtx5090` — and it will skip every
+combo already on disk (`[cached]` in the log) and continue from where it
+left off. At most the single in-flight combo is lost, never more.
+
+If you change any setting that affects results (pairs, seeds, sigmas,
+optimizer steps, control points, evaluator names, etc.) between runs
+while reusing the same `run_name`, the script will refuse to resume and
+raise a clear error rather than silently mixing incompatible cached
+results — delete `results/gate/<run_name>/cache/` to start fresh in that
+case, or use a different profile/run_name.
 
 ## Tunables (env vars, all optional)
 
@@ -61,11 +80,14 @@ install exactly that yourself.
   skips if already present — safe to re-run after an interruption.
 - The evaluator-training step does **not** skip on re-run (always
   retrains) — comment out lines in the script if you need to resume
-  mid-way through the 4 training runs.
-- Sizing this run's actual wall-clock time on a 5090 wasn't possible from
-  the dev laptop (RTX 3050 4GB) this was built on — the closest real data
-  point: on that card, one (class-pair, sigma, seed) combination for the
-  geodesic path took ~25 min at the heavier settings this profile restores
-  (200+ optimizer steps, 16+ control points). A 5090 should be dramatically
-  faster, but budget time to let this run unattended rather than assuming
-  a specific number.
+  mid-way through the 4 training runs. (The gate sweep in step 7 *is*
+  resumable, per above — this only applies to steps 1-6.)
+- Timing, measured on the actual 5090 (not estimated): `tangential_geodesic`
+  runs at ~0.31s per optimizer step at this profile's chunk settings.
+  `geodesic_optimizer_steps=150` was chosen from a real 300-step
+  convergence check on that hardware — it captures 92% of the achievable
+  curve-energy decrease (see `config.rtx5090()`'s docstring for the full
+  curve data). Combined with 3 seeds, the full 45-pair × 3-sigma × 3-seed
+  sweep (real + permutation control) is estimated at **~42-51 hours** —
+  a long unattended run; use the resume capability above rather than
+  trying to babysit it in one sitting.
