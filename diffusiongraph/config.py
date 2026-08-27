@@ -191,11 +191,15 @@ def rtx5090() -> GateConfig:
     """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger
     evaluator architectures (resnet50/vit_base instead of resnet18/
     vit_small -- see models/classifiers.py), larger batches, no gradient
-    checkpointing needed, all 3 routing_sigmas levels x 5 seeds (inherited
-    from GateConfig's defaults / explicit below). Same code path as
-    local_poc() — only these numbers change. See
+    checkpointing needed, all 3 routing_sigmas levels x 3 seeds. Same code
+    path as local_poc() — only these numbers change. See
     experiment/run_rtx5090_poc.sh for the end-to-end script that uses this
     profile.
+
+    Seeds: 3, not 5 -- this is not a corner cut, it's an EXACT match to
+    SEED_semantic_class_graph.md §3.3's own stated bar: "persists across
+    all >=3 evaluators and >=3 seeds." 5 was padding beyond spec, not a
+    requirement; 3 seeds is what the gate's own definition asks for.
 
     Convergence settings (optimizer_steps, num_control_points) were
     CALIBRATED FROM A REAL MEASUREMENT on the actual 5090, not guessed: a
@@ -205,14 +209,19 @@ def rtx5090() -> GateConfig:
     jvp_chunk_size=64) gave ~12-15 min/combo at the original 500-step/
     32-point settings -- 675 combos x 2 (real+permuted) x that rate would
     be ~270-340 hours, not tenable. Trimmed to 150/16 (~4x fewer
-    optimizer-step-chunks) for an estimated ~70-85 hours total across the
-    full 45-pair x 3-sigma x 5-seed sweep (real + permutation control) --
-    a long unattended multi-day run, but full exhaustive coverage
-    preserved rather than cutting pairs/seeds/sigmas. The local PoC run's
-    energy curves were already well-converged before 200 steps at the
-    smaller local settings, so 150 steps here is not expected to
-    meaningfully undermine curve quality -- worth spot-checking energy_history
-    in a few combos' PathResult.meta once real results start landing."""
+    optimizer-step-chunks); combined with the 5->3 seed cut, estimated
+    ~42-51 hours total across the full 45-pair x 3-sigma x 3-seed sweep
+    (real + permutation control) -- long but no longer multi-day-plus,
+    full exhaustive pair/sigma coverage preserved.
+
+    optimizer_steps=150 itself is STILL A REASONED ESTIMATE, not a
+    verified plateau point -- an earlier version of this docstring claimed
+    local runs were "already well-converged before 200 steps," but that
+    was written without actually checking real energy_history data, which
+    was wrong to assert as fact. Use config.convergence_check() to get
+    real per-step energy data on the actual target hardware before
+    trusting this number for a multi-day run; adjust
+    geodesic_optimizer_steps here once that's checked against real data."""
     return GateConfig(
         run_name="phase1_gate_full",
         class_pair_mode="all_pairs",
@@ -226,9 +235,9 @@ def rtx5090() -> GateConfig:
                                      # Raise further if VRAM usage still looks
                                      # low -- this was the actual bottleneck
                                      # behind low utilization on first run.
-        geodesic_optimizer_steps=150,   # trimmed from 500 -- see docstring above
+        geodesic_optimizer_steps=150,   # trimmed from 500 -- PENDING real verification, see docstring above
         geodesic_num_control_points=16, # trimmed from 32 -- see docstring above
-        routing_seeds=(0, 1, 2, 3, 4),
+        routing_seeds=(0, 1, 2),        # 3 seeds = SEED §3.3's own stated minimum, not a cut -- see docstring above
         evaluator_names=("resnet50", "vit_base", "clip_zeroshot"),
     )
 
