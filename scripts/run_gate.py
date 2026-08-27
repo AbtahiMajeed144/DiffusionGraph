@@ -98,7 +98,7 @@ def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pa
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--profile", choices=["local_poc", "local_smoke", "rtx5090"], default="local_poc")
+    p.add_argument("--profile", choices=["local_poc", "local_smoke", "convergence_check", "rtx5090"], default="local_poc")
     p.add_argument("--skip-permutation", action="store_true", help="skip the label-permutation control (faster iteration only -- never for a real gate report)")
     p.add_argument(
         "--evaluators", default=None,

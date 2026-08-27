@@ -151,6 +151,42 @@ def local_smoke() -> GateConfig:
     )
 
 
+def convergence_check() -> GateConfig:
+    """ONE-OFF DIAGNOSTIC, not a gate profile -- exists to answer a single
+    question with real data instead of a guess: where does the
+    tangential_geodesic curve-energy optimization actually plateau?
+
+    Same small scale as local_smoke (batch=2, 8 control points,
+    jvp_chunk_size=8 -- so per-step cost matches the already-measured
+    ~0.31s/step on the 5090) but with optimizer_steps pushed well past any
+    plausible convergence point (300, vs the 30 local_smoke uses) so the
+    live per-step energy log (see tangential_geodesic.py's progress
+    printing) shows the full decay curve, not just its early/steep part.
+    Only 1 pair, 1 seed, no permutation control -- this run is purely about
+    reading the printed energy values, not producing a routing verdict.
+    Expected wall-clock: ~300 steps x 0.31s/step (2 chunks/step) =~ 1.5-2 min.
+
+    Usage: python scripts/run_gate.py --profile convergence_check --evaluators resnet50,vit_base,clip_zeroshot --skip-permutation
+    Then read the printed step/energy lines to decide the REAL
+    geodesic_optimizer_steps value for rtx5090(), instead of guessing."""
+    return GateConfig(
+        run_name="convergence_check",
+        class_pair_mode="poc_subset",
+        poc_pairs=((3, 5),),
+        samples_per_class=2,
+        batch_size=2,
+        amp_dtype="float16",
+        grad_checkpointing=True,
+        geodesic_optimizer_steps=300,
+        geodesic_num_control_points=8,
+        geodesic_jvp_chunk_size=8,
+        routing_sigmas=(2.0,),
+        routing_seeds=(0,),
+        path_t_steps=8,
+        enabled_paths=("tangential_geodesic",),  # skip paths 1/2, not relevant to this check
+    )
+
+
 def rtx5090() -> GateConfig:
     """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger
     evaluator architectures (resnet50/vit_base instead of resnet18/
@@ -197,7 +233,12 @@ def rtx5090() -> GateConfig:
     )
 
 
-PROFILES = {"local_poc": local_poc, "local_smoke": local_smoke, "rtx5090": rtx5090}
+PROFILES = {
+    "local_poc": local_poc,
+    "local_smoke": local_smoke,
+    "convergence_check": convergence_check,
+    "rtx5090": rtx5090,
+}
 
 
 def get_profile(name: str) -> GateConfig:
