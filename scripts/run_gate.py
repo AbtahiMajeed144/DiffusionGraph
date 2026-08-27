@@ -29,6 +29,7 @@ from diffusiongraph.eval.routing import compute_C, build_routing_matrix, is_rout
 from diffusiongraph.paths import build_path, PATH_USES_CONDITIONAL_MODEL
 from diffusiongraph.analysis.controls import evaluate_controls
 from diffusiongraph.analysis.figures import plot_routing_matrix, plot_trajectory
+from diffusiongraph.utils.checkpoint_cache import ComboCache, make_combo_key, verify_or_write_run_config
 
 
 def get_class_pairs(cfg):
@@ -37,15 +38,38 @@ def get_class_pairs(cfg):
     return [(a, b) for a in range(10) for b in range(a + 1, 10)]
 
 
-def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pairs, out_dir: Path, tag: str):
+def _all_combo_keys(cfg, class_pairs, tag: str):
+    keys = []
+    for path_name in cfg.enabled_paths:
+        sigma_list = [None] if path_name == "linear_condition" else cfg.routing_sigmas
+        for sigma_tau in sigma_list:
+            sigma_key = sigma_tau if sigma_tau is not None else "final"
+            for (a, b) in class_pairs:
+                for seed in cfg.routing_seeds:
+                    keys.append(make_combo_key(tag, path_name, sigma_key, a, b, seed))
+    return keys
+
+
+def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pairs, out_dir: Path, tag: str, cache: ComboCache):
     """Runs every (path_type, sigma_tau-or-N/A, seed, class_pair) combination
     for one dataset/evaluator-set (real labels or permuted). Returns:
       routing_matrices: {(path_type, sigma_tau_key): {'strength':.., 'routing_event':..}}
       all_pair_c_results: {(path_type, sigma_tau_key): {(a,b): [PairCResult,...]}}
+
+    RESUME: every combo is looked up in `cache` before computing. If
+    present (a prior run already finished it), it's loaded instead of
+    recomputed. Every freshly computed combo is saved to `cache`
+    IMMEDIATELY -- so an interruption at any point only loses the single
+    combo currently in flight, not the whole sweep. See
+    diffusiongraph/utils/checkpoint_cache.py.
     """
     routing_matrices = {}
     all_pair_c_results = {}
     trajectories_for_plots = []
+
+    all_keys = _all_combo_keys(cfg, class_pairs, tag)
+    n_cached = sum(1 for k in all_keys if cache.exists(k))
+    print(f"[{tag}] sweep: {len(all_keys)} combos total, {n_cached} already cached (resuming), {len(all_keys) - n_cached} to compute")
 
     for path_name in cfg.enabled_paths:
         uses_cond = PATH_USES_CONDITIONAL_MODEL[path_name]
@@ -59,6 +83,18 @@ def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pa
             for (a, b) in class_pairs:
                 per_seed_results = []
                 for seed in cfg.routing_seeds:
+                    combo_key = make_combo_key(tag, path_name, key[1], a, b, seed)
+
+                    if cache.exists(combo_key):
+                        c_result, traj = cache.load(combo_key)
+                        per_seed_results.append(c_result)
+                        trajectories_for_plots.append((key, a, b, seed, traj))
+                        print(
+                            f"[{tag}] {path_name} sigma={sigma_tau} pair=({CIFAR10_CLASSES[a]},{CIFAR10_CLASSES[b]}) "
+                            f"seed={seed} C={c_result.evaluator_c} [cached]"
+                        )
+                        continue
+
                     gen = torch.Generator().manual_seed(seed)
                     x_a, x_b = dataset.sample_pairs(a, b, cfg.samples_per_class, generator=gen)
 
@@ -82,6 +118,7 @@ def run_sweep(cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pa
                     c_result = compute_C(traj)
                     per_seed_results.append(c_result)
                     trajectories_for_plots.append((key, a, b, seed, traj))
+                    cache.save(combo_key, c_result, traj)
 
                     print(
                         f"[{tag}] {path_name} sigma={sigma_tau} pair=({CIFAR10_CLASSES[a]},{CIFAR10_CLASSES[b]}) "
@@ -118,6 +155,11 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"=== Phase 1 gate: profile={args.profile} run_name={cfg.run_name} evaluators={cfg.evaluator_names} ===")
 
+    cache_dir = out_dir / "cache"
+    verify_or_write_run_config(cache_dir, cfg)  # raises if resuming with incompatible settings
+    cache = ComboCache(cache_dir)
+    print(f"Resume cache: {cache_dir} (re-run this same command anytime to resume after an interruption)")
+
     denoiser_cond = EDMDenoiser(cfg.edm_checkpoint_cond, device=cfg.device)
     denoiser_uncond = EDMDenoiser(cfg.edm_checkpoint_uncond, device=cfg.device)
     evaluators = load_evaluators(cfg.evaluator_names, device=cfg.device)
@@ -126,7 +168,7 @@ def main():
     print(f"Class pairs: {class_pairs}")
 
     routing_matrices, pair_c_results, trajectories = run_sweep(
-        cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pairs, out_dir, tag="real"
+        cfg, dataset, denoiser_cond, denoiser_uncond, evaluators, class_pairs, out_dir, tag="real", cache=cache
     )
 
     # --- figures: one routing-matrix heatmap per (path_type, sigma_tau) ---
@@ -164,7 +206,7 @@ def main():
         perm_names = tuple(n for n in cfg.evaluator_names if n != "clip_zeroshot")
         perm_evaluators = load_permuted_evaluators(names=perm_names, device=cfg.device)
         perm_routing_matrices, perm_pair_c_results, _ = run_sweep(
-            cfg, perm_dataset, denoiser_cond, denoiser_uncond, perm_evaluators, class_pairs, out_dir, tag="permuted"
+            cfg, perm_dataset, denoiser_cond, denoiser_uncond, perm_evaluators, class_pairs, out_dir, tag="permuted", cache=cache
         )
         geo_key = [k for k in perm_routing_matrices if k[0] == "tangential_geodesic"]
         if geo_key:
