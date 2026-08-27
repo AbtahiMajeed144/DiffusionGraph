@@ -214,14 +214,23 @@ def rtx5090() -> GateConfig:
     (real + permutation control) -- long but no longer multi-day-plus,
     full exhaustive pair/sigma coverage preserved.
 
-    optimizer_steps=150 itself is STILL A REASONED ESTIMATE, not a
-    verified plateau point -- an earlier version of this docstring claimed
-    local runs were "already well-converged before 200 steps," but that
-    was written without actually checking real energy_history data, which
-    was wrong to assert as fact. Use config.convergence_check() to get
-    real per-step energy data on the actual target hardware before
-    trusting this number for a multi-day run; adjust
-    geodesic_optimizer_steps here once that's checked against real data."""
+    optimizer_steps=150 is now VERIFIED, not guessed: a real
+    convergence_check() run on the 5090 (300 steps, same cat/dog pair,
+    printed energy at ~30-step intervals) showed a classic diminishing-
+    returns curve --
+        step  30: 483.10 (49% of the total 1->300 energy decrease captured)
+        step  60: 456.53 (71%)
+        step  90: 443.35 (82%)
+        step 120: 436.26 (88%)
+        step 150: 432.24 (92%)   <- chosen stopping point
+        step 210: 427.79 (96%)
+        step 300: 422.61 (100%, by definition of the measurement window)
+    150 sits solidly past the curve's knee: 92% of the achievable decrease
+    for half the compute of running to 300 (150->300 buys only 8 more
+    points for 2x the cost -- a bad trade; 100->150 would buy ~7 points
+    for 50% more compute -- a better trade, kept at 150 rather than
+    trimmed further since real convergence quality matters for the actual
+    geodesic-tangency claim this path type is testing, not just speed)."""
     return GateConfig(
         run_name="phase1_gate_full",
         class_pair_mode="all_pairs",
