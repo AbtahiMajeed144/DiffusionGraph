@@ -21,9 +21,34 @@ directly from the cached raw softmax trajectories:
   - margin_runnerup: peak class's lead over the 2nd-best non-endpoint class
   - margin_over_best_endpoint: peak class's lead over max(p(A), p(B))
 
+Also computes, per combo (same "free" cost -- everything comes from the
+already-cached softmax, no new experiments):
+  - p_ab_at_peak: max(p(A), p(B)) at the SAME point where the "other"
+    class peaked. High = the image was still confidently A-or-B even at
+    its most routed-looking moment (realistic, just not evidence of
+    routing). Low = neither endpoint was confident there either.
+  - min_max_ab_over_path: the WORST point across the entire path for
+    endpoint confidence -- min over t of max(p(A), p(B)). If this stays
+    reasonably high, the path never left "recognizably A or B" territory.
+    If it's low (near the ~0.1 uniform-over-10-classes floor), that's the
+    signature of a genuinely ambiguous/OOD stretch -- nothing (not even
+    the endpoints) gets confident recognition there.
+These directly test whether "no clear third class" means "still looks
+like A or B" (fine for realism, just not routing) vs "genuinely
+unrecognizable as anything" (a real realism problem for this path type).
+
+--evaluators lets you restrict which evaluators feed the strict/
+consistent-flip/consensus computation, e.g. to check whether
+disagreement is partly an artifact of one weaker evaluator (a
+from-scratch ViT trained to only ~70% clean-test accuracy will be a much
+noisier vote than a 93%+ ResNet or CLIP, for reasons unrelated to
+whether the image itself is realistic):
+    --evaluators resnet50,clip_zeroshot
+
 Usage:
     python scripts/analyze_cache.py --run-name phase1_gate_full
     python scripts/analyze_cache.py --run-name phase1_gate_full --tag real --path tangential_geodesic --sigma 2.0
+    python scripts/analyze_cache.py --run-name phase1_gate_full --evaluators resnet50,clip_zeroshot
 """
 from __future__ import annotations
 import argparse
@@ -81,12 +106,22 @@ def analyze_combo(softmax_by_evaluator: dict, class_a: int, class_b: int) -> dic
         runnerup = float(other_sorted[1]) if len(other_sorted) > 1 else 0.0
         best_endpoint = float(max(full_row[class_a], full_row[class_b]))
 
+        # max(p(A), p(B)) at EVERY t, not just the "other"-peak t -- lets
+        # us ask: across the whole path, does endpoint confidence ever
+        # fully collapse (genuinely OOD stretch), or does the path stay
+        # "recognizably A or B" throughout even where routing evidence is
+        # weakest?
+        max_ab_per_t = np.maximum(mean_sm[:, class_a], mean_sm[:, class_b])  # [T]
+
         results[name] = dict(
             peak_value=peak_value,
             peak_class=peak_class,
             is_full_argmax=bool(is_full_argmax),
             margin_runnerup=peak_value - runnerup,
             margin_over_best_endpoint=peak_value - best_endpoint,
+            p_ab_at_peak=best_endpoint,                        # endpoint confidence AT the other-class peak moment
+            min_max_ab_over_path=float(max_ab_per_t.min()),    # worst point anywhere on the path for endpoint confidence
+            avg_max_ab_over_path=float(max_ab_per_t.mean()),
         )
     return results
 
@@ -111,7 +146,15 @@ def main():
     p.add_argument("--tag", default="real", choices=["real", "permuted"])
     p.add_argument("--path", default="tangential_geodesic")
     p.add_argument("--tau", type=float, default=0.5)
+    p.add_argument(
+        "--evaluators", default=None,
+        help="Comma-separated subset of evaluator names to use for strict/consistent-flip/"
+             "consensus/p(A,B) computation, e.g. resnet50,clip_zeroshot -- drops the rest "
+             "(e.g. a weaker evaluator whose disagreement may reflect its own accuracy, not "
+             "the image's realism). Default: use all evaluators present in the cache."
+    )
     args = p.parse_args()
+    eval_filter = set(n.strip() for n in args.evaluators.split(",")) if args.evaluators else None
 
     out_dir = RESULTS_DIR / "gate" / args.run_name
     cache_dir = out_dir / "cache"
@@ -128,16 +171,21 @@ def main():
     n_expected, n_present = len(expected_for_path), len(present_for_path)
     status = "COMPLETE" if n_present == n_expected else f"PARTIAL -- {n_present}/{n_expected} ({100*n_present/max(n_expected,1):.1f}%)"
     print(f"=== Post-hoc analysis: run_name={args.run_name} tag={args.tag} path={args.path} ===")
-    print(f"Coverage: {status}\n")
+    print(f"Coverage: {status}")
+    if eval_filter:
+        print(f"Evaluators: {sorted(eval_filter)} (filtered from cache)")
+    print()
 
     grouped = defaultdict(list)
     for key in present_for_path:
         info = parse_combo_key(key)
         payload = json.loads((cache_dir / f"{key}.json").read_text())
         npz = np.load(cache_dir / f"{key}.npz")
-        extra = analyze_combo({name: npz[name] for name in npz.files}, info["a"], info["b"])
+        evaluator_names = [n for n in npz.files if eval_filter is None or n in eval_filter]
+        evaluator_c = {n: v for n, v in payload["evaluator_c"].items() if n in evaluator_names}
+        extra = analyze_combo({name: npz[name] for name in evaluator_names}, info["a"], info["b"])
         grouped[(info["sigma_key"], info["a"], info["b"])].append(
-            {"seed": info["seed"], "evaluator_c": payload["evaluator_c"], "extra": extra}
+            {"seed": info["seed"], "evaluator_c": evaluator_c, "extra": extra}
         )
 
     if not grouped:
@@ -151,32 +199,51 @@ def main():
         all_flip = all(r["extra"][ev]["is_full_argmax"] for r in seed_results for ev in r["extra"])
         peak_classes = {r["extra"][ev]["peak_class"] for r in seed_results for ev in r["extra"]}
         consistent_flip = all_flip and len(peak_classes) == 1
-        avg_margin = float(np.mean([r["extra"][ev]["margin_runnerup"] for r in seed_results for ev in r["extra"]]))
+        all_extra = [r["extra"][ev] for r in seed_results for ev in r["extra"]]
+        avg_margin = float(np.mean([e["margin_runnerup"] for e in all_extra]))
+        avg_p_ab_at_peak = float(np.mean([e["p_ab_at_peak"] for e in all_extra]))
+        avg_min_max_ab = float(np.mean([e["min_max_ab_over_path"] for e in all_extra]))
         consensus = CIFAR10_CLASSES[peak_classes.pop()] if len(peak_classes) == 1 else "disagree:" + ",".join(sorted(CIFAR10_CLASSES[c] for c in peak_classes))
         partial = n_seeds < expected_n_seeds
         rows.append(dict(
             pair=f"{CIFAR10_CLASSES[a]}-{CIFAR10_CLASSES[b]}", sigma=sigma_key,
             n_seeds=n_seeds, expected_n_seeds=expected_n_seeds, partial=partial,
             strict_routing=strict, consistent_argmax_flip=consistent_flip,
-            avg_margin_runnerup=round(avg_margin, 4), consensus_class=consensus,
+            avg_margin_runnerup=round(avg_margin, 4),
+            avg_p_ab_at_peak=round(avg_p_ab_at_peak, 4),
+            avg_min_max_ab_over_path=round(avg_min_max_ab, 4),
+            consensus_class=consensus,
         ))
 
-    hdr = f"{'pair':<20} {'sigma':<7} {'seeds':<9} {'strict(>tau, all)':<19} {'consistent_argmax_flip':<24} {'avg_margin':<11} consensus_class"
+    hdr = (f"{'pair':<20} {'sigma':<7} {'seeds':<9} {'strict':<8} {'flip':<7} {'margin':<8} "
+           f"{'p(AB)@peak':<11} {'min_p(AB)':<10} consensus_class")
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
         seeds_str = f"{r['n_seeds']}/{r['expected_n_seeds']}" + (" *" if r["partial"] else "")
-        print(f"{r['pair']:<20} {str(r['sigma']):<7} {seeds_str:<9} {str(r['strict_routing']):<19} "
-              f"{str(r['consistent_argmax_flip']):<24} {r['avg_margin_runnerup']:<11} {r['consensus_class']}")
+        print(f"{r['pair']:<20} {str(r['sigma']):<7} {seeds_str:<9} {str(r['strict_routing']):<8} "
+              f"{str(r['consistent_argmax_flip']):<7} {r['avg_margin_runnerup']:<8} "
+              f"{r['avg_p_ab_at_peak']:<11} {r['avg_min_max_ab_over_path']:<10} {r['consensus_class']}")
     if any(r["partial"] for r in rows):
         print("\n* = fewer seeds than the profile's routing_seeds count -- preliminary, not a confirmed result yet.")
+    print(
+        "\np(AB)@peak = avg max(p(A),p(B)) at the SAME moment the 'other' class peaked -- high means the "
+        "image still looked like an endpoint even there (realistic, just not routed).\n"
+        "min_p(AB)  = avg (across evaluators/seeds) of the WORST point anywhere on the path for endpoint "
+        "confidence -- low means there's a stretch where neither A nor B (nor anything else, per the disagreement "
+        "pattern) gets confidently recognized -- the genuinely-OOD signature."
+    )
 
     complete_rows = [r for r in rows if not r["partial"]]
     n_strict = sum(r["strict_routing"] for r in complete_rows)
     n_flip = sum(r["consistent_argmax_flip"] for r in complete_rows)
-    print(f"\nAmong {len(complete_rows)} pairs with full seed coverage at sigma={args.path!r} combos analyzed:")
+    avg_p_ab_at_peak_all = float(np.mean([r["avg_p_ab_at_peak"] for r in complete_rows])) if complete_rows else float("nan")
+    avg_min_p_ab_all = float(np.mean([r["avg_min_max_ab_over_path"] for r in complete_rows])) if complete_rows else float("nan")
+    print(f"\nAmong {len(complete_rows)} pairs with full seed coverage for {args.path!r}:")
     print(f"  strict routing events (C(A,B)>tau on all evaluators/seeds): {n_strict}")
     print(f"  consistent argmax-flip events (weaker, relative-dominance): {n_flip}")
+    print(f"  avg p(A or B) at the other-class peak moment: {avg_p_ab_at_peak_all:.4f}")
+    print(f"  avg worst-point-on-path p(A or B):            {avg_min_p_ab_all:.4f}")
 
     summary_path = out_dir / f"posthoc_{args.tag}_{args.path}.json"
     summary_path.write_text(json.dumps({"coverage": status, "rows": rows}, indent=2))
