@@ -155,11 +155,28 @@ def rtx5090() -> GateConfig:
     """Scale-up target: full exhaustive 45-pair CIFAR-10 sweep, larger
     evaluator architectures (resnet50/vit_base instead of resnet18/
     vit_small -- see models/classifiers.py), larger batches, no gradient
-    checkpointing needed, more geodesic optimizer steps for tighter
-    convergence, all 3 routing_sigmas levels (inherited from GateConfig's
-    default). Same code path as local_poc() — only these numbers change.
-    See experiment/run_rtx5090_poc.sh for the end-to-end script that uses
-    this profile."""
+    checkpointing needed, all 3 routing_sigmas levels x 5 seeds (inherited
+    from GateConfig's defaults / explicit below). Same code path as
+    local_poc() — only these numbers change. See
+    experiment/run_rtx5090_poc.sh for the end-to-end script that uses this
+    profile.
+
+    Convergence settings (optimizer_steps, num_control_points) were
+    CALIBRATED FROM A REAL MEASUREMENT on the actual 5090, not guessed: a
+    local_smoke run (batch=2, 8 control points, jvp_chunk_size=8) measured
+    ~0.31s/step; scaling that to this profile's higher segment count
+    (samples_per_class=16 x control_points -> more chunks/step at
+    jvp_chunk_size=64) gave ~12-15 min/combo at the original 500-step/
+    32-point settings -- 675 combos x 2 (real+permuted) x that rate would
+    be ~270-340 hours, not tenable. Trimmed to 150/16 (~4x fewer
+    optimizer-step-chunks) for an estimated ~70-85 hours total across the
+    full 45-pair x 3-sigma x 5-seed sweep (real + permutation control) --
+    a long unattended multi-day run, but full exhaustive coverage
+    preserved rather than cutting pairs/seeds/sigmas. The local PoC run's
+    energy curves were already well-converged before 200 steps at the
+    smaller local settings, so 150 steps here is not expected to
+    meaningfully undermine curve quality -- worth spot-checking energy_history
+    in a few combos' PathResult.meta once real results start landing."""
     return GateConfig(
         run_name="phase1_gate_full",
         class_pair_mode="all_pairs",
@@ -173,8 +190,8 @@ def rtx5090() -> GateConfig:
                                      # Raise further if VRAM usage still looks
                                      # low -- this was the actual bottleneck
                                      # behind low utilization on first run.
-        geodesic_optimizer_steps=500,
-        geodesic_num_control_points=32,
+        geodesic_optimizer_steps=150,   # trimmed from 500 -- see docstring above
+        geodesic_num_control_points=16, # trimmed from 32 -- see docstring above
         routing_seeds=(0, 1, 2, 3, 4),
         evaluator_names=("resnet50", "vit_base", "clip_zeroshot"),
     )
