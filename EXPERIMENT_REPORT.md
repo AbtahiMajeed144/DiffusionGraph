@@ -1,6 +1,6 @@
 # Phase 1 Gate — Experiment Report
 
-**Status as of this report: Phase 1 gate sweep in progress on the RTX 5090 (`rtx5090` profile), ~26% complete, σ=0.5 only so far. No final GO/PIVOT/KILL decision yet.** This document is the running record of every experiment, calibration, and finding behind that in-progress run — written to support the σ=2.0/σ=8.0 decision and the eventual Phase 2 go/no-go call, not as a final result.
+**Status as of this report: Phase 1 gate sweep in progress on the RTX 5090 (`rtx5090` profile), ~52% complete — σ=0.5 fully done (null on both bars), σ=2.0 ~56% done (trending the same way). No final GO/PIVOT/KILL decision yet; the read is shifting toward PIVOT pending σ=8.0.** This document is the running record of every experiment, calibration, and finding behind that in-progress run.
 
 See `SEED_semantic_class_graph.md` for the research design this implements, `THIRD_PARTY.md` for reference-repo provenance, and `experiment/README.md` for how to reproduce/resume the run itself. This file is the *findings* record; those are the *how-to* records.
 
@@ -121,26 +121,38 @@ Also at 300 steps, cat↔dog's tangential_geodesic C values: resnet50=0.4999765,
 
 Built because the ~2-day sweep held everything in memory, writing to disk only at the very end. Tested on `local_smoke`: first run (0 cached, 6 computed) → second run (6/6 `[cached]`, seconds instead of ~2 min, byte-identical results and decision). Fingerprint-mismatch guard verified to correctly raise `RuntimeError` rather than silently mixing incompatible cached results.
 
-### 5.6 `rtx5090` real sweep — in progress, σ=0.5 partial data
+### 5.6 `rtx5090` real sweep — in progress, σ=0.5 COMPLETE + σ=2.0 partial
 
-At time of writing: **106-107/405 combos for `tangential_geodesic`, all σ=0.5 (26.2% coverage)**, 35 pairs with full 3-seed coverage. Full per-pair table: `results/gate/phase1_gate_full/posthoc_real_tangential_geodesic.json`.
+At time of writing: 210/405 combos for `tangential_geodesic` (51.9%). **σ=0.5 is now fully complete — all 45/45 pairs, 3/3 seeds.** σ=2.0 has 25/45 pairs so far. Full per-pair tables: `results/gate/phase1_gate_full/posthoc_real_tangential_geodesic.json`.
 
-**Aggregate, all 3 evaluators:**
+**σ=0.5 (complete, all 3 evaluators):**
 
 | Metric | Value |
 |---|---|
-| Strict routing events (C(A,B)>0.5, all evaluators+seeds) | **0 / 35** |
-| Consistent argmax-flip events (weaker, relative bar) | **0 / 35** |
-| Consensus intermediate class | "disagree" for ~31/35 pairs |
-| avg `margin_runnerup` | 0.05–0.21 (low — no class clearly dominant even among the 8 non-endpoint classes) |
-| avg p(A or B) at the "other-class" peak moment | 0.4286 |
-| avg worst-point-on-path p(A or B) | 0.2874 |
+| Strict routing events (C(A,B)>0.5, all evaluators+seeds) | **0 / 45** |
+| Consistent argmax-flip events (weaker, relative bar) | **0 / 45** |
+| avg `margin_runnerup` | 0.05–0.23 (low) |
+| avg p(A or B) at the "other-class" peak moment | ~0.44–0.47 |
+| avg worst-point-on-path p(A or B) | ~0.29–0.30 |
 
-**Filtered to resnet50+clip only** (dropping `vit_base`): still **0/35 strict, 0/35 flip** — only 4/35 pairs gain a clean single-class consensus. The weak-evaluator hypothesis is a real but minor contributor, not the dominant explanation (a single earlier n=1 test had suggested otherwise — did not generalize).
+This portion of the sweep is now done, not partial — the null result on both bars is solid at this noise level.
 
-**Realism read**: `min_p(AB)≈0.29` sits meaningfully above the "fully unrecognizable" floor (~0.10-0.15 for 10-way uniform) but well below "stays confidently A-or-B" (~0.6+). Combined with the low margins and pervasive evaluator disagreement, the most honest characterization is: **path midpoints are landing in a genuinely ambiguous zone — probability spread across several classes rather than concentrated on the endpoints, a specific third class, or nothing.** This is not yet distinguishable, from softmax data alone, between "realistic chimera our evaluators aren't trained to recognize" and "genuinely degraded/unrealistic image" — see §7.
+**σ=2.0 (25/45 so far) — the theoretically-predicted "coarse structure should be more visible here" pattern is NOT showing up.** Directly comparing the same pairs across both σ levels (filtered resnet50+clip view):
 
-**Important caveat on all of §5.6: σ=0.5 is the *lowest*-noise level tested, and both Park et al. and `Strategic_Blind_Spots_Analysis.md` (#1) predict coarse, shape-level routing structure should appear at *higher* noise, not low — low-σ is close to the finished image, where fine detail (not class identity) is what's still being decided. A null result at σ=0.5 alone does not predict what σ=2.0 or σ=8.0 will show.**
+| pair | σ=0.5 p(AB)@peak / min_p(AB) | σ=2.0 p(AB)@peak / min_p(AB) |
+|---|---|---|
+| airplane-automobile | 0.581 / 0.405 | 0.297 / 0.249 |
+| airplane-cat | 0.503 / 0.246 | 0.336 / 0.174 |
+| automobile-deer | 0.544 / 0.260 | 0.179 / 0.112 |
+| airplane-frog | 0.450 / 0.260 | 0.186 / 0.110 (near the ~0.10 uniform floor) |
+
+Confidence drops across the board at higher σ, but **`margin_runnerup` does not rise, and strict/flip are still 0/25 at σ=2.0.** This looks like "more noise → less confident about everything, uniformly" rather than "more noise → clearer coarse-class routing structure." The σ=2.0/8.0-will-show-it expectation from earlier in this report is **not being borne out so far** (σ=8.0 still untested).
+
+**One genuinely interesting exception**: **automobile↔ship → consensus "airplane" at BOTH σ=0.5 and σ=2.0** — the only pair showing a reproducible, non-"disagree" consensus across two different noise levels tested so far. Still sub-threshold (never crosses strict), but intuitively coherent (automobile, ship, airplane are all vehicle-category classes) and the single most promising concrete data point in the sweep to date. Worth tracking as σ=8.0 and the remaining σ=2.0 pairs land.
+
+**Filtered to resnet50+clip only** (dropping `vit_base`): pattern unchanged at both σ levels — still 0 strict/flip either way. The weak-evaluator hypothesis is a real but minor contributor, not the dominant explanation (a single earlier n=1 test had suggested otherwise — did not generalize).
+
+**Realism read** (σ=0.5): `min_p(AB)≈0.29` sits meaningfully above the "fully unrecognizable" floor (~0.10-0.15 for 10-way uniform) but well below "stays confidently A-or-B" (~0.6+) — path midpoints land in a genuinely ambiguous zone, not distinguishable from softmax data alone between "realistic chimera our evaluators aren't trained to recognize" and "genuinely degraded/unrealistic image" (see §7). At σ=2.0 this ambiguity deepens further (values trending toward the uniform floor for several pairs).
 
 ### 5.7 Energy-scale sanity check (no bug found)
 
@@ -150,7 +162,7 @@ A raw `tangential_geodesic` energy value of ~44,000 at σ=0.5 (vs. ~540 in the �
 
 ## 6. Known gaps / limitations (explicit, not yet addressed)
 
-1. **No σ=2.0 or σ=8.0 data yet** — the single biggest open question; see the caveat in §5.6.
+1. **No σ=8.0 data yet, and σ=2.0 only ~56% done** — σ=0.5 is complete (null); whether σ=8.0 changes the picture is still the single biggest open question, though σ=2.0's partial trend so far is not encouraging (see §5.6).
 2. **No permutation-control comparison for the real `rtx5090` sweep** — still pending, needed for the KILL check.
 3. **No direct realism metric** (FID, LPIPS, likelihood, distance-to-manifold) — everything so far is a classifier-softmax proxy. SEED §5 explicitly warns against collapsing these.
 4. **No raw images saved anywhere in the cache** — only evaluator outputs. Can't visually inspect any generated path without a targeted re-run.
@@ -163,13 +175,15 @@ A raw `tangential_geodesic` energy value of ~44,000 at σ=0.5 (vs. ~540 in the �
 ## 7. Current read (not a final decision)
 
 - The **soft bar** (geometry-aware path beats baselines on average) held clearly in every complete small-scale run so far (`local_poc`: 0.293 vs 0.247/0.091). Not yet recomputed at the partial `rtx5090` scale.
-- The **strict bar** (confirmed individual routing events) has now been tested on 35 real pairs at σ=0.5 and found **zero** — a materially weaker result than the small-n checks suggested.
+- The **strict bar** (confirmed individual routing events) is now **0/45 at σ=0.5 (complete) and 0/25 at σ=2.0 (partial)** — a materially weaker result than the small-n checks suggested, and getting *less* encouraging as more data lands, not more.
+- **The theoretical expectation that higher σ would reveal more routing structure is not being supported by the σ=2.0 data so far** — confidence drops uniformly with noise rather than concentrating onto specific third classes. This shifts the read meaningfully toward PIVOT, pending σ=8.0.
+- One reproducible, intuitively coherent exception: **automobile↔ship→airplane at both tested σ levels** — worth tracking, not yet enough to change the overall picture.
 - The realism data suggests the geodesic path is not achieving clean, confident samples throughout — a genuine open question about whether `tangential_geodesic` is meeting its own design goal (manifold-tangential ⇒ realistic), separate from whether it routes.
-- **None of this is conclusive yet.** σ=0.5 alone, no permutation comparison, no visual inspection, no higher-σ data — this is a checkpoint, not a verdict.
+- **Still not conclusive.** No σ=8.0, no permutation comparison, no visual inspection — this is a checkpoint, not a verdict, but the trend across σ=0.5→2.0 is a real update, not just "more of the same."
 
 ## 8. Recommended next steps, in priority order
 
-1. **Let σ=2.0 and σ=8.0 data land, re-run `analyze_cache.py`** — the theoretically-motivated place to actually see routing, if it exists.
+1. **Let σ=2.0 finish and σ=8.0 land, re-run `analyze_cache.py`** — σ=2.0's partial trend doesn't look promising, but σ=8.0 (untested) is the last chance for the noise-level hypothesis to hold. If it shows the same uniform-confidence-decay pattern, that's a strong signal toward PIVOT.
 2. **Run the permutation-control comparison** once enough real data exists, to check the σ=0.5 null isn't secretly an artifact story instead.
 3. **Visually inspect actual images** for 2-3 contrasting pairs (highest/lowest `min_p(AB)`) — the only way to resolve the realistic-chimera-vs-genuinely-broken question in §6.3. Requires a small targeted re-run with image-saving added (not yet built).
 4. **Investigate `vit_base`'s training curve** — rule in/out underfitting before trusting or discounting its votes further.
