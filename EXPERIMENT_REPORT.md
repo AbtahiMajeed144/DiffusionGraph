@@ -201,7 +201,18 @@ Two decisive readings:
 
 **cat is a generic attractor even in the mask-matched within-class null** (20% of σ=0.5 peaks, 31% of σ=2.0 peaks) — confirming cat/dog are basins of the method/evaluators, not routing destinations.
 
-**Still pending on the null side (review fixes 3, 2):** A↔A floors for `slerp_noise` and `linear_condition` (to decide PIVOT vs KILL on the soft geometry-vs-baseline bar — each path type needs its own floor subtracted), and a decision on the excursion-depth control (the review's "random-endpoint" / `decoupled` null vs. a cleaner far-apart-same-class variant — deciding whether the +0.037 is genuine routing or just longer geodesics passing through more ambiguous space).
+**Fix 3 done — A↔A floors for all three paths (mask-matched, n=90 each), and the soft bar is now in serious KILL trouble.** The soft "geometry beats baselines" claim rested on the path ordering `tangential (0.29) > slerp (0.25) > linear (0.09)` from the small `local_poc` run. But the A↔A **null floors reproduce that exact ordering**:
+
+| path | σ=0.5 A↔A floor | σ=2.0 A↔A floor |
+|---|---|---|
+| `linear_condition` | 0.081 (σ=final) | — |
+| `slerp_noise` | 0.156 | 0.255 |
+| `tangential_geodesic` | 0.190 | 0.293 |
+
+Since the ordering holds in a null with *no routing*, it is explained by each method producing differently-blurry midpoints (linear generates a clean single class → tiny floor; slerp/tangential blend through noise → higher floors), **not** by the geometry path finding more real routing. The soft-bar ordering is largely a floor artifact. The fair test is **floor-subtracted excess** (real − own null). For `tangential_geodesic`: +0.037 (σ=0.5), +0.001 (σ=2.0). To finalize KILL-vs-PIVOT, the same subtraction is needed for slerp/linear — pending the real sweep's slerp/linear C means (they ran first in the sweep, so they are cached):
+`python scripts/audit_cache.py --run-name phase1_gate_full --path slerp_noise` and `--path linear_condition`. If slerp's low-σ floor-subtracted excess ≈ tangential's +0.037, the geometry path has no real edge → the finding is a KILL on the soft bar with only the single, method-agnostic low-σ cross-class excess surviving.
+
+**Still pending (review fix 2):** the excursion-depth control — is the +0.037 genuine routing or just that cross-class endpoints are farther apart (longer geodesic → more ambiguous midpoints)? The review's "random-endpoint" / `decoupled` null vs. a cleaner far-apart-same-class variant. Construction choice open.
 
 ---
 
