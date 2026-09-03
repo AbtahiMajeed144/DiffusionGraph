@@ -1,6 +1,6 @@
 # Phase 1 Gate — Experiment Report
 
-**Status as of this report: Phase 1 gate sweep in progress on the RTX 5090 (`rtx5090` profile). σ=0.5 and σ=2.0 combined (254 `tangential_geodesic` combos, n=762 individual values) now show a clean, well-powered, statistically-separated null distribution (Phase 0 Audit, §5.8) — the strongest evidence yet, and it doesn't depend on the permutation control, which is separately confirmed broken (§5.9) and needs fixing regardless. No final GO/PIVOT/KILL decision yet; the read is now meaningfully closer to PIVOT than at any earlier checkpoint, pending σ=8.0.** This document is the running record of every experiment, calibration, and finding behind that in-progress run.
+**Status as of this report: read is PIVOT, on strong evidence (§5.10).** The A↔A same-class null resolves the picture: at σ=2.0 real cross-class C (0.2932) equals the within-class artifact floor (0.2930) → the geodesic instrument's routing signal is dominated by an interpolation/selection artifact, not semantics; at σ=0.5 a small genuine cross-class excess survives the null (+0.068), the only real structure found, and it lives at *low* noise (so σ=8.0 is now low-priority, not "the last hope"). Strict routing bar is a clean, threshold-robust null. Recommendation: stop the sweep, do not resume σ=8.0, pull the one live thread (low-σ excess) then write up as a characterized PIVOT. This does not depend on the (separately confirmed-broken, §5.9) permutation control. This document is the running record of every experiment, calibration, and finding.
 
 See `SEED_semantic_class_graph.md` for the research design this implements, `THIRD_PARTY.md` for reference-repo provenance, and `experiment/README.md` for how to reproduce/resume the run itself. This file is the *findings* record; those are the *how-to* records.
 
@@ -177,13 +177,31 @@ Two separate, confirmed problems, found by tracing source code directly (not spe
 - **`linear_condition`**: a genuine masking bug. The conditional generator is the same checkpoint for real and permuted sweeps and never sees the permutation; images generated for slot `(a,b)` are byte-identical between the two sweeps. `compute_C` masks `{a,b}` (raw slot integers) instead of `{π(a),π(b)}`, so the permuted evaluator's *correct* recognition of the real content gets counted as fake routing — the actual mechanism behind the ~0.97-1.0 permuted values observed throughout this project for path 1, previously misattributed to "path 1 is an unreliable baseline."
 - **`slerp_noise`/`tangential_geodesic`**: structural non-independence. Since every class has exactly 5000 images and `all_pairs` mode exhaustively covers all 45 label-pairs, the permuted sweep computes geodesics on the *same 45 underlying real-class pairs* as the real sweep, just relabeled — not an independent test of label-dependence.
 
-**Given §5.8's clean, smooth, well-separated null distribution for `tangential_geodesic`, this matters less than it would have if the result had been positive** — a null result doesn't need a broken control to explain it away, and the distribution shape (no suspicious near-threshold clustering) argues against a metric-artifact story too. But it still needs fixing (per-image random relabeling, not a bijective class permutation) before any final KILL/GO claim can cite "permutation clean" as evidence — not yet done.
+**Given §5.8's clean, smooth, well-separated null distribution for `tangential_geodesic`, this matters less than it would have if the result had been positive** — a null result doesn't need a broken control to explain it away. And §5.10 now supplies a *working* null (A↔A same-class) that replaces the broken permutation control entirely. NB: an earlier version of this section proposed fixing the control via per-image random relabeling — the review correctly rejected that (random labels cripple the evaluator → ~10% accuracy → near-uniform softmax → the control passes mechanically for reasons unrelated to routing). The correct replacement keeps the evaluator real and is what §5.10 implements.
+
+### 5.10 A↔A same-class null (`scripts/run_null_controls.py`) — the decisive comparison
+
+C(A,B) is a double maximum (over ~16 control points × 8 classes), so it is upward-biased by selection alone and **uninterpretable in absolute terms without a null computed with the same machinery** (review §3.3). The A↔A control runs the identical geodesic pipeline between two *distinct samples of the same class* — where there is no third class to route to, so its C is the pure floor from midpoint ambiguity + double-max. Comparison against the real cross-class sweep, stratified by σ (real numbers from the σ-stratified §5.8 re-run; null from `phase1_null_same_class`):
+
+| σ | real cross-class C mean | A↔A null C mean | gap (real − null) | reading |
+|---|---|---|---|---|
+| 0.5 | 0.2271 (n=405, 135 combos) | 0.1592 (n=21, 7 combos) | **+0.068** | real exceeds the within-class floor |
+| 2.0 | 0.2932 (n=381, 127 combos) | 0.2930 (n=30, 10 combos) | **+0.0002** | identical — no cross-class-specific signal |
+
+Two decisive readings:
+
+1. **The artifact floor is large and grows with σ** (0.159 → 0.293). Most of the "routing signal" in the raw C numbers is interpolation/selection artifact present even with no third class — the review's core concern, fully vindicated. Absolute C is nearly meaningless without this null.
+2. **A genuine cross-class excess survives the null, but only at low σ.** At σ=0.5, real (0.2271) beats the floor (0.1592) by +0.068 — and this is **understated**, because a masking asymmetry biases the null *upward* (A↔A masks 1 class → max over 9; real masks 2 → max over 8). So the null had a thumb on the scale and real still beat it. By σ=2.0 the gap is +0.0002 — gone; the floor rose to meet it. **Whatever weak cross-class structure exists lives at low noise and is erased by σ=2.0.** This inverts the earlier "σ=8.0 is the last hope" framing: the signal is at *low* σ, not high, so σ=8.0 (even blurrier) is the least likely place to find anything.
+
+**Secondary finding — inter-evaluator agreement is not protective.** Evaluators agree on the peak class *more* on the A↔A null (σ=2.0: 60% all-agree) than on real cross-class pairs (σ=2.0: 21.3%), with comparable or higher pairwise correlations. They co-agree on *artifacts*, not just real structure — so SEED's "≥3 evaluators must agree" criterion provides little protection against artifact-driven false positives. (Null agreement rates are from small n=7-10 combos; directionally clear, worth firming up.)
+
+**Caveats on the null**: A↔A is n=7 combos (σ=0.5) / 10 combos (σ=2.0), 1 seed — the σ=0.5 +0.068 gap is ~3σ but the null's combo count is small; worth extending to all 10 classes × more seeds. The masking asymmetry (9 vs 8) should be removed for an airtight quantitative gap (mask a second random class in the A↔A control) — but since it biases conservative for both conclusions, the qualitative picture is safe.
 
 ---
 
 ## 6. Known gaps / limitations (explicit, not yet addressed)
 
-1. **No σ=8.0 data yet.** σ=0.5 is complete (null); σ=2.0/0.5 combined (254 `tangential_geodesic` combos) now show a clean, well-separated null distribution (§5.8) — the single biggest open question is whether σ=8.0 changes this, but the trend across two noise levels and a properly-powered distributional check is not encouraging for that hope.
+1. **No σ=8.0 data — and per §5.10 it is now LOW priority, not high.** The A↔A null shows the only cross-class signal lives at *low* σ (0.5) and is already gone by σ=2.0; σ=8.0 (blurrier still) is the least likely place to find routing, not the "last hope" earlier framing assumed. The live thread is σ≤0.5, not σ=8.0.
 2. **Permutation control is confirmed broken for both mechanisms** (§5.9) — needs a redesign (per-image random relabeling) before any final KILL/GO claim can cite it, though this matters less now that §5.8 gives an independent, non-permutation-dependent reason to expect a null result.
 3. **No direct realism metric** (FID, LPIPS, likelihood, distance-to-manifold) — everything so far is a classifier-softmax proxy. SEED §5 explicitly warns against collapsing these.
 4. **No raw images saved anywhere in the cache** — only evaluator outputs. Can't visually inspect any generated path without a targeted re-run.
@@ -193,19 +211,22 @@ Two separate, confirmed problems, found by tracing source code directly (not spe
 
 ---
 
-## 7. Current read (not a final decision, but the most confident this report has been)
+## 7. Current read — PIVOT, on the strongest evidence in the project
 
-- **The strict bar (§5.8, Check 2) is now the strongest single piece of evidence in this project**: a smooth, unimodal, well-powered (n=762) distribution of `tangential_geodesic` C(A,B) values centered ~2.9 standard deviations below τ=0.5, with only 1.2% ever crossing. This isn't "0 events because the threshold is slightly too strict" — the shape itself shows no separation from a null distribution. This reading does not depend on the (confirmed-broken, §5.9) permutation control at all, which makes it more trustworthy than anything that came before it, not less.
-- **The soft bar** (geometry-aware path beats baselines on average) held in the small-scale `local_poc` run (0.293 vs 0.247/0.091) but has not been recomputed at the real sweep's scale — worth doing, but Check 2's distributional evidence is a stronger signal than a single mean comparison either way.
-- **The theoretical expectation that higher σ would reveal more routing structure is still not supported** across σ=0.5 and σ=2.0 combined — confidence drops with noise rather than concentrating onto specific third classes. σ=8.0 remains the last untested condition, but two levels of consistent null result lower the odds it reverses the picture.
-- **cat/dog as generic attractor classes (39.1% of all "other-class" peaks, §5.8 Check 3) is itself a real, notable finding** — worth understanding on its own terms (a property of the tangential-geodesic method's geometry, or of the evaluators' training, not yet determined) — and it means the one previously-promising lead, automobile↔ship→airplane, is the *only* pair-specific result not explainable by this generic-attractor effect.
-- The realism data (§5.6) still suggests the geodesic path isn't achieving clean, confident samples throughout — a live, separate question from whether it routes.
-- **Not yet a final decision** — σ=8.0 is untested, the permutation control needs fixing before being cited as evidence either way, and no visual inspection has happened yet. But this is meaningfully closer to PIVOT than any previous checkpoint in this report, on stronger evidence than before.
+The A↔A null (§5.10) turns the earlier "clean null" into a precise, quantitative account:
+
+- **Strict routing bar: dead.** 0/45 confirmed events at σ=0.5 (complete), and the C distribution sits ~2.9σ below τ with no near-threshold clustering (§5.8). Robust and threshold-independent.
+- **Absolute C magnitude: mostly artifact.** The A↔A null measures the double-max floor directly (0.159 at σ=0.5, 0.293 at σ=2.0). At σ=2.0 real cross-class C (0.2932) *equals* the within-class floor (0.2930) — zero routing-specific signal. The review's central concern is fully vindicated: raw C is uninterpretable without this null.
+- **One genuine, narrow signal.** At σ=0.5, real cross-class C (0.2271) exceeds the A↔A floor (0.1592) by +0.068 (understated, given the null's upward masking bias). This is real — geodesics between *different* classes put more mass on third classes than within-class geodesics — but small, sub-threshold, and confined to low noise. It is not "routing events"; it is a weak distributional excess.
+- **Evaluator agreement is not protective** (§5.10) — evaluators co-agree on the A↔A artifact as much as or more than on real pairs. The ≥3-evaluator criterion doesn't guard against artifact false positives.
+- **cat/dog are generic attractor basins**, appearing as the top "other class" even in within-class interpolation — not evidence of pair-specific routing. automobile↔ship→airplane remains the one pair-specific observation not explained by a generic attractor, still n=1-ish.
+
+**Verdict: PIVOT** per SEED §3.5 — no confirmed routing, the geodesic instrument's signal is dominated by an interpolation/selection artifact, but there is a real (if weak, low-σ-only) cross-class structure worth one focused look before the instrument is fully retired. This does *not* require σ=8.0 or a fixed permutation control to conclude.
 
 ## 8. Recommended next steps, in priority order
 
-1. **Let σ=2.0 finish and σ=8.0 land, re-run `analyze_cache.py`** — σ=2.0's partial trend doesn't look promising, but σ=8.0 (untested) is the last chance for the noise-level hypothesis to hold. If it shows the same uniform-confidence-decay pattern, that's a strong signal toward PIVOT.
-2. **Run the permutation-control comparison** once enough real data exists, to check the σ=0.5 null isn't secretly an artifact story instead.
-3. **Visually inspect actual images** for 2-3 contrasting pairs (highest/lowest `min_p(AB)`) — the only way to resolve the realistic-chimera-vs-genuinely-broken question in §6.3. Requires a small targeted re-run with image-saving added (not yet built).
-4. **Investigate `vit_base`'s training curve** — rule in/out underfitting before trusting or discounting its votes further.
-5. Once σ=2.0/8.0 + permutation data are in: recompute the full GO/PIVOT/KILL decision on both bars, and decide whether Phase 1's "specific identifiable intermediate class" framing (the strict bar) was the right operationalization of SEED's central claim, or whether the softer magnitude-contrast + realism-focused reading is the more defensible one to report.
+1. **Do NOT resume σ=8.0.** The signal lives at low σ; σ=8.0 is the least informative condition. Stop the sweep (it's resumable if this call is ever reversed).
+2. **Firm up and sharpen the low-σ result** — the one live thread: (a) extend the A↔A null to all 10 classes × 3 seeds and fix the masking asymmetry (mask a 2nd random class → max over 8, matching real) for an airtight quantitative gap; (b) run the null and real at σ *below* 0.5 (e.g. 0.1, 0.25) to see whether the cross-class excess grows as class structure sharpens.
+3. **Visually inspect images** (`scripts/inspect_path_images.py`, already built) for the highest-gap σ=0.5 pairs vs. an A↔A example — resolves the realistic-chimera-vs-degraded question and shows what, if anything, the low-σ excess corresponds to visually.
+4. **Decide Phase 1 framing**: write it up as a characterized PIVOT — "the curvature-weighted geodesic instrument measures an interpolation artifact, not semantic routing, on CIFAR-10; a weak low-noise cross-class excess is the only structure that survives a same-class null" — which is a legitimate, honest science-of-generative-models negative result with one positive thread, not a failure.
+5. Deferred/lower value now: the decoupled control (confirm masking semantics first), the fixed permutation control, `vit_base` training curve. None gate the PIVOT call.
