@@ -67,8 +67,12 @@ import numpy as np
 from diffusiongraph.config import RESULTS_DIR, CIFAR10_CLASSES
 from run_gate import get_class_pairs, _all_combo_keys  # reuse the exact enumeration run_gate.py itself uses
 
+# tag is any run-tag (real|permuted|same_class|decoupled|...); the "__"
+# double-underscore delimiters separate fields, and no tag/path token
+# contains a double underscore, so greedy matching backtracks correctly.
 COMBO_RE = re.compile(
-    r"^(?P<tag>real|permuted)__(?P<path>[a-z_]+)__sigma(?P<sigma>[^_]+)__pair(?P<a>\d+)-(?P<b>\d+)__seed(?P<seed>\d+)$"
+    r"^(?P<tag>[a-z_]+)__(?P<path>linear_condition|slerp_noise|tangential_geodesic|string_method)"
+    r"__sigma(?P<sigma>[^_]+)__pair(?P<a>\d+)-(?P<b>\d+)__seed(?P<seed>\d+)$"
 )
 
 
@@ -143,7 +147,11 @@ def load_run_config(cache_dir: Path) -> SimpleNamespace:
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run-name", required=True)
-    p.add_argument("--tag", default="real", choices=["real", "permuted"])
+    p.add_argument("--tag", default="real", choices=["real", "permuted"],
+                   help="real or permuted. (For null-control caches -- same_class/decoupled -- "
+                        "use scripts/audit_cache.py, which globs the cache and is not tied to "
+                        "the real sweep's class-pair enumeration that this script's per-pair "
+                        "realism table depends on.)")
     p.add_argument("--path", default="tangential_geodesic")
     p.add_argument("--tau", type=float, default=0.5)
     p.add_argument(

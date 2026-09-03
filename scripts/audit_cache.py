@@ -43,21 +43,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import numpy as np
 
 from diffusiongraph.config import RESULTS_DIR, CIFAR10_CLASSES
-from run_gate import get_class_pairs, _all_combo_keys
 from analyze_cache import parse_combo_key, load_run_config
 
 
-def collect_all(cache_dir: Path, cfg, tag: str):
-    """Returns a list of dicts, one per cached combo for this tag, with
-    parsed key info + the raw evaluator_c / evaluator_argmax_class."""
-    class_pairs = get_class_pairs(cfg)
-    keys = _all_combo_keys(cfg, class_pairs, tag)
+def collect_all(cache_dir: Path, tag: str = None):
+    """Glob every cached combo in the dir (tag-agnostic -- works for real/
+    permuted AND the null-control caches same_class/decoupled), optionally
+    filtered to one tag. Globbing the actual files rather than
+    reconstructing expected keys means this works for any slot scheme,
+    including the null controls whose slots aren't real class pairs."""
     records = []
-    for key in keys:
-        json_path = cache_dir / f"{key}.json"
-        if not json_path.exists():
+    for json_path in sorted(cache_dir.glob("*.json")):
+        if json_path.name == "run_config.json":
             continue
-        info = parse_combo_key(key)
+        info = parse_combo_key(json_path.stem)
+        if info is None:
+            continue
+        if tag is not None and info["tag"] != tag:
+            continue
         payload = json.loads(json_path.read_text())
         records.append({**info, "evaluator_c": payload["evaluator_c"], "evaluator_argmax_class": payload["evaluator_argmax_class"]})
     return records
@@ -123,6 +126,52 @@ def check4_evaluator_ablation(records):
               f"(diff={vb.mean()-others.mean():+.4f})")
 
 
+def check_concordance(records):
+    """Inter-evaluator AGREEMENT, not marginals (audit defect 3.2). Check 4
+    showed the three evaluators have near-identical marginal C distributions
+    -- but equal marginals with ZERO per-combo correlation would be a strong
+    artifact signature (each evaluator independently spiking on unrelated
+    classes, i.e. noise). This computes what Check 4 cannot: do the
+    evaluators actually agree pair-by-pair?
+
+      - Pearson + Spearman correlation of C values across evaluator pairs,
+        matched per (path, sigma, a, b, seed) combo.
+      - Fraction of combos where all evaluators' argmax peak class is the
+        SAME (the 'consensus' rate -- high disagreement here + a null C
+        distribution is the clean 'no routing, just noise' signature)."""
+    print("\n--- Inter-evaluator concordance (agreement, not marginals -- audit defect 3.2) ---")
+    if not records:
+        print("  (no data)")
+        return
+    eval_names = sorted(records[0]["evaluator_c"].keys())
+    if len(eval_names) < 2:
+        print(f"  Only {len(eval_names)} evaluator(s) present -- concordance undefined.")
+        return
+
+    # C-value vectors, aligned across combos (same combo order for all evaluators).
+    c_vectors = {name: np.array([r["evaluator_c"][name] for r in records]) for name in eval_names}
+    print(f"  n={len(records)} combos, evaluators={eval_names}")
+    print("  pairwise C-value correlation (Pearson / Spearman):")
+    from itertools import combinations
+    def spearman(a, b):
+        ra, rb = np.argsort(np.argsort(a)), np.argsort(np.argsort(b))
+        return float(np.corrcoef(ra, rb)[0, 1])
+    for e1, e2 in combinations(eval_names, 2):
+        pear = float(np.corrcoef(c_vectors[e1], c_vectors[e2])[0, 1])
+        spear = spearman(c_vectors[e1], c_vectors[e2])
+        flag = "  <== near-zero: equal marginals but no agreement = noise/artifact signature" if abs(pear) < 0.15 else ""
+        print(f"    {e1:<14} vs {e2:<14}  Pearson={pear:+.3f}  Spearman={spear:+.3f}{flag}")
+
+    # Argmax peak-class agreement across evaluators, per combo.
+    all_agree = 0
+    for r in records:
+        classes = set(r["evaluator_argmax_class"].values())
+        if len(classes) == 1:
+            all_agree += 1
+    print(f"  all-evaluators-agree-on-peak-class rate: {all_agree}/{len(records)} ({100*all_agree/len(records):.1f}%)")
+    print(f"    (uniform-random argmax over ~8 other-classes would give all-{len(eval_names)}-agree ~= {100*(1/8)**(len(eval_names)-1):.1f}%)")
+
+
 def check5_permutation_independence(records_real, records_perm, permutation):
     """For unconditional paths only (slerp_noise, tangential_geodesic):
     pair real(a,b)'s C values vs permuted(pi(a),pi(b))'s C values -- the
@@ -182,30 +231,46 @@ def main():
 
     out_dir = RESULTS_DIR / "gate" / args.run_name
     cache_dir = out_dir / "cache"
-    cfg = load_run_config(cache_dir)
 
-    records_real = collect_all(cache_dir, cfg, "real")
-    records_perm = collect_all(cache_dir, cfg, "permuted")
+    all_records = collect_all(cache_dir)
+    tags_present = sorted({r["tag"] for r in all_records})
     print(f"=== Phase 0 Audit: run_name={args.run_name} ===")
-    print(f"Loaded {len(records_real)} real combos, {len(records_perm)} permuted combos from cache.")
+    print(f"Loaded {len(all_records)} combos; tags present: {tags_present}")
+
+    # Primary analysis tag: 'real' if present (main sweep), else whatever
+    # single control tag this cache holds (null-control caches).
+    primary_tag = "real" if "real" in tags_present else (tags_present[0] if tags_present else None)
+    if primary_tag is None:
+        print("No parseable combos in cache -- nothing to analyze.")
+        return
+    records_real = [r for r in all_records if r["tag"] == primary_tag]
+    records_perm = [r for r in all_records if r["tag"] == "permuted"]
+    if primary_tag != "real":
+        print(f"(no 'real' tag present -- analyzing control tag '{primary_tag}' instead)")
 
     if args.path:
         path_types = [args.path]
     else:
         path_types = sorted({r["path"] for r in records_real})
 
+    # Stratify by (path, sigma) -- audit defect 3.1: pooling sigma=0.5
+    # (complete) with sigma=2.0 (partial, and per EXPERIMENT_REPORT.md
+    # §5.6 a genuinely different regime with confidences falling toward
+    # the uniform floor) mixes two distributions. linear_condition has a
+    # single sigma_key ("final") so it is unaffected.
     for path_name in path_types:
-        subset = [r for r in records_real if r["path"] == path_name]
-        print(f"\n{'='*70}\nPATH TYPE: {path_name}  (n={len(subset)} combos)\n{'='*70}")
-        check2_histogram(subset)
-        check3_marginal_argmax(subset)
-        check4_evaluator_ablation(subset)
-
-    if not args.path and len(path_types) > 1:
-        print(f"\n{'='*70}\nPOOLED (all path types combined -- reference only, do not use alone)\n{'='*70}")
-        check2_histogram(records_real)
-        check3_marginal_argmax(records_real)
-        check4_evaluator_ablation(records_real)
+        path_records = [r for r in records_real if r["path"] == path_name]
+        sigmas = sorted({str(r["sigma_key"]) for r in path_records})
+        for sigma_key in sigmas:
+            subset = [r for r in path_records if str(r["sigma_key"]) == sigma_key]
+            print(f"\n{'='*70}\nPATH: {path_name}  SIGMA: {sigma_key}  (n={len(subset)} combos)\n{'='*70}")
+            check2_histogram(subset)
+            check3_marginal_argmax(subset)
+            check4_evaluator_ablation(subset)
+            check_concordance(subset)
+        if len(sigmas) > 1:
+            print(f"\n--- {path_name}: ALL SIGMAS POOLED (reference only -- sigma regimes differ, see per-sigma above) ---")
+            check2_histogram(path_records)
 
     permutation = np.random.RandomState(cfg_permutation_seed(cache_dir)).permutation(10)
     check5_permutation_independence(records_real, records_perm, permutation)
