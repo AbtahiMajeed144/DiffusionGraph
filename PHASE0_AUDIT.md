@@ -49,6 +49,17 @@ python scripts/audit_cache.py --run-name phase1_gate_full
 - **Check 4** (`vit_base` ablation on continuous C, not event counts): reports each evaluator's own C(A,B) distribution (mean/median/std/percentiles) directly — the prior comparison (`analyze_cache.py --evaluators`) compared 0-vs-0 event counts, which is uninformative when nothing has crossed τ anyway; this compares the actual continuous values.
 - **Bonus empirical check for 5b**: directly measures the correlation between real-pair(a,b)'s C values and permuted-pair(π(a),π(b))'s C values for the *same underlying real class pair* — a positive correlation would be direct empirical confirmation of the code-trace finding above, not just a theoretical argument.
 
+## Checks 2-4, actual results (`--path tangential_geodesic`, 254 combos, σ=0.5+σ=2.0, n=762)
+
+**Note on methodology**: the first run of this script pooled all path types together, which diluted exactly what these checks exist to answer (`linear_condition` runs much lower than `tangential_geodesic`). Fixed to stratify by path type by default; numbers below are `tangential_geodesic` alone.
+
+- **Check 2**: mean=0.2577, median=0.2505, std=0.0844. τ=0.5 sits **~2.9σ above the mean**; only 1.2% of values ever cross it. Smooth, unimodal, well-separated — not a "clustered just below threshold" pattern that a slightly lower τ would unlock. **This is the strongest evidence in the project so far for a genuine null**, and it doesn't depend on the (confirmed-broken, above) permutation control at all.
+- **Check 3**: cat (23.1%) + dog (16.0%) = **39.1%** of every "other-class" peak across 254 pairs — ~2x the 20% two-uniform-classes baseline. A real, path-specific attractor effect (worse than the pooled run suggested), meaning any pair-specific "routes through cat/dog" claim needs real skepticism now. Airplane stays at 8.7% (below uniform) — the automobile↔ship→airplane finding survives as the one result not explained by this effect.
+- **Check 4**: clip=0.2405, resnet50=0.2762 (highest mean *and* std), vit_base=0.2565 (diff from others: **-0.0018**). Cleanly refutes the weak-evaluator hypothesis a second time, at full statistical power — if anything resnet50 is the noisiest evaluator, not vit_base.
+- **Check 5**: still 0 permuted combos loaded — the `all_pairs`-mode permutation sweep hasn't started yet.
+
+Full write-up in `EXPERIMENT_REPORT.md` §5.8-5.9.
+
 ## Deliverable status
 
-This file is the "one-page honest restatement" the audit calls for — **check 1 and check 5's findings are final** (pure code-trace, not data-dependent, no GPU needed, done here). **Checks 2-4 need one run of `scripts/audit_cache.py` on the 5090's existing cache** to fill in. No gate blocks on this — it's bookkeeping needed regardless of which way Phase 1 ultimately reads, and check 5 in particular needs to be resolved (fix + possibly re-run the permutation half) before any final GO/PIVOT/KILL call is defensible.
+This file is the "one-page honest restatement" the audit calls for. **Checks 1, 5, and now 2-4 (`tangential_geodesic`) are done.** Remaining: re-run checks 2-4 for `slerp_noise`/`linear_condition` for comparison (`--path` flag), and check 5's empirical correlation test once permuted `all_pairs` data starts landing. No gate blocks on this — it's bookkeeping needed regardless of which way Phase 1 ultimately reads, and the permutation control fix is still needed before any final GO/PIVOT/KILL call can cite it as evidence, even though the Check 2 result now stands on its own independent of that fix.

@@ -1,6 +1,6 @@
 # Phase 1 Gate — Experiment Report
 
-**Status as of this report: Phase 1 gate sweep in progress on the RTX 5090 (`rtx5090` profile), ~52% complete — σ=0.5 fully done (null on both bars), σ=2.0 ~56% done (trending the same way). No final GO/PIVOT/KILL decision yet; the read is shifting toward PIVOT pending σ=8.0.** This document is the running record of every experiment, calibration, and finding behind that in-progress run.
+**Status as of this report: Phase 1 gate sweep in progress on the RTX 5090 (`rtx5090` profile). σ=0.5 and σ=2.0 combined (254 `tangential_geodesic` combos, n=762 individual values) now show a clean, well-powered, statistically-separated null distribution (Phase 0 Audit, §5.8) — the strongest evidence yet, and it doesn't depend on the permutation control, which is separately confirmed broken (§5.9) and needs fixing regardless. No final GO/PIVOT/KILL decision yet; the read is now meaningfully closer to PIVOT than at any earlier checkpoint, pending σ=8.0.** This document is the running record of every experiment, calibration, and finding behind that in-progress run.
 
 See `SEED_semantic_class_graph.md` for the research design this implements, `THIRD_PARTY.md` for reference-repo provenance, and `experiment/README.md` for how to reproduce/resume the run itself. This file is the *findings* record; those are the *how-to* records.
 
@@ -158,12 +158,33 @@ Confidence drops across the board at higher σ, but **`margin_runnerup` does not
 
 A raw `tangential_geodesic` energy value of ~44,000 at σ=0.5 (vs. ~540 in the σ=2.0 convergence check) was investigated and explained: energy is an unnormalized *sum* over all segments × batch, so it scales with `samples_per_class` (16 vs. 2, ~8x) and `num_control_points` (16 vs. 8, ~2x); the remaining gap is consistent with the score-Jacobian's magnitude growing sharply at low σ (`score = (denoised-x)/σ²`). Raw energy values are **not comparable across different σ/batch/control-point settings** — only relative decrease within one combo's own trajectory is meaningful.
 
+### 5.8 Phase 0 Audit (`scripts/audit_cache.py`) — the most decisive result yet, and it's a clean null
+
+Full findings in `PHASE0_AUDIT.md`; this is the `tangential_geodesic`-specific readout (254 combos, σ=0.5+σ=2.0 combined, n=762 individual C(A,B) values, properly stratified — see below for why stratification mattered):
+
+**Check 2 (distribution shape)**: mean=0.2577, median=0.2505, std=0.0844. τ=0.5 sits **~2.9 standard deviations above the mean** — a smooth, unimodal, well-separated distribution, only 1.2% of values ever crossing τ. This is the cleanest evidence to date, and it cuts against the "maybe the threshold is just slightly too strict" reading: there is no suspicious clustering just below 0.5 that a lower τ would meaningfully unlock. **This looks like a genuine, well-powered null result for the strict routing claim**, independent of the permutation-control question (§5.9) — it's a direct property of the real sweep's own distribution.
+
+**Check 3 (marginal argmax) — a real, substantial pattern, stronger than the pooled read suggested**: within `tangential_geodesic` specifically, **cat (23.1%) and dog (16.0%) together account for 39.1% of every "other-class" peak across 254 pairs** — roughly 2x what two uniformly-distributed classes would contribute (20% baseline). This is a genuine, path-specific effect (even more pronounced than in the pooled check-3 result from §5.6/audit v1), and it means **any pair-specific "routes through cat/dog" claim now needs real skepticism** — cat and dog look like generic attractor basins for this particular path-construction method, not evidence of pair-specific semantic structure. Airplane remains at 8.7% (below uniform), so the automobile↔ship→airplane finding (§5.6) is *not* explained by this effect — it survives as the one pair-specific result not attributable to a generic attractor class.
+
+**Check 4 (evaluator ablation)**: clip=0.2405, resnet50=0.2762 (highest mean *and* highest std=0.1052), vit_base=0.2565 (diff from pooled others: **-0.0018**, i.e. essentially zero). The weak-evaluator hypothesis is now cleanly refuted a second time, at full power — and if anything **resnet50**, not vit_base, shows the most spread. Worth correcting the record on this.
+
+**Check 5**: still untestable — permutation sweep for `all_pairs` mode hasn't started yet.
+
+### 5.9 Permutation control — confirmed broken for both mechanisms (see `PHASE0_AUDIT.md` for the full code trace)
+
+Two separate, confirmed problems, found by tracing source code directly (not speculation):
+
+- **`linear_condition`**: a genuine masking bug. The conditional generator is the same checkpoint for real and permuted sweeps and never sees the permutation; images generated for slot `(a,b)` are byte-identical between the two sweeps. `compute_C` masks `{a,b}` (raw slot integers) instead of `{π(a),π(b)}`, so the permuted evaluator's *correct* recognition of the real content gets counted as fake routing — the actual mechanism behind the ~0.97-1.0 permuted values observed throughout this project for path 1, previously misattributed to "path 1 is an unreliable baseline."
+- **`slerp_noise`/`tangential_geodesic`**: structural non-independence. Since every class has exactly 5000 images and `all_pairs` mode exhaustively covers all 45 label-pairs, the permuted sweep computes geodesics on the *same 45 underlying real-class pairs* as the real sweep, just relabeled — not an independent test of label-dependence.
+
+**Given §5.8's clean, smooth, well-separated null distribution for `tangential_geodesic`, this matters less than it would have if the result had been positive** — a null result doesn't need a broken control to explain it away, and the distribution shape (no suspicious near-threshold clustering) argues against a metric-artifact story too. But it still needs fixing (per-image random relabeling, not a bijective class permutation) before any final KILL/GO claim can cite "permutation clean" as evidence — not yet done.
+
 ---
 
 ## 6. Known gaps / limitations (explicit, not yet addressed)
 
-1. **No σ=8.0 data yet, and σ=2.0 only ~56% done** — σ=0.5 is complete (null); whether σ=8.0 changes the picture is still the single biggest open question, though σ=2.0's partial trend so far is not encouraging (see §5.6).
-2. **No permutation-control comparison for the real `rtx5090` sweep** — still pending, needed for the KILL check.
+1. **No σ=8.0 data yet.** σ=0.5 is complete (null); σ=2.0/0.5 combined (254 `tangential_geodesic` combos) now show a clean, well-separated null distribution (§5.8) — the single biggest open question is whether σ=8.0 changes this, but the trend across two noise levels and a properly-powered distributional check is not encouraging for that hope.
+2. **Permutation control is confirmed broken for both mechanisms** (§5.9) — needs a redesign (per-image random relabeling) before any final KILL/GO claim can cite it, though this matters less now that §5.8 gives an independent, non-permutation-dependent reason to expect a null result.
 3. **No direct realism metric** (FID, LPIPS, likelihood, distance-to-manifold) — everything so far is a classifier-softmax proxy. SEED §5 explicitly warns against collapsing these.
 4. **No raw images saved anywhere in the cache** — only evaluator outputs. Can't visually inspect any generated path without a targeted re-run.
 5. **`vit_base`'s 70% accuracy is unexplained** — underfit vs. something else not determined (no training curve reviewed).
@@ -172,14 +193,14 @@ A raw `tangential_geodesic` energy value of ~44,000 at σ=0.5 (vs. ~540 in the �
 
 ---
 
-## 7. Current read (not a final decision)
+## 7. Current read (not a final decision, but the most confident this report has been)
 
-- The **soft bar** (geometry-aware path beats baselines on average) held clearly in every complete small-scale run so far (`local_poc`: 0.293 vs 0.247/0.091). Not yet recomputed at the partial `rtx5090` scale.
-- The **strict bar** (confirmed individual routing events) is now **0/45 at σ=0.5 (complete) and 0/25 at σ=2.0 (partial)** — a materially weaker result than the small-n checks suggested, and getting *less* encouraging as more data lands, not more.
-- **The theoretical expectation that higher σ would reveal more routing structure is not being supported by the σ=2.0 data so far** — confidence drops uniformly with noise rather than concentrating onto specific third classes. This shifts the read meaningfully toward PIVOT, pending σ=8.0.
-- One reproducible, intuitively coherent exception: **automobile↔ship→airplane at both tested σ levels** — worth tracking, not yet enough to change the overall picture.
-- The realism data suggests the geodesic path is not achieving clean, confident samples throughout — a genuine open question about whether `tangential_geodesic` is meeting its own design goal (manifold-tangential ⇒ realistic), separate from whether it routes.
-- **Still not conclusive.** No σ=8.0, no permutation comparison, no visual inspection — this is a checkpoint, not a verdict, but the trend across σ=0.5→2.0 is a real update, not just "more of the same."
+- **The strict bar (§5.8, Check 2) is now the strongest single piece of evidence in this project**: a smooth, unimodal, well-powered (n=762) distribution of `tangential_geodesic` C(A,B) values centered ~2.9 standard deviations below τ=0.5, with only 1.2% ever crossing. This isn't "0 events because the threshold is slightly too strict" — the shape itself shows no separation from a null distribution. This reading does not depend on the (confirmed-broken, §5.9) permutation control at all, which makes it more trustworthy than anything that came before it, not less.
+- **The soft bar** (geometry-aware path beats baselines on average) held in the small-scale `local_poc` run (0.293 vs 0.247/0.091) but has not been recomputed at the real sweep's scale — worth doing, but Check 2's distributional evidence is a stronger signal than a single mean comparison either way.
+- **The theoretical expectation that higher σ would reveal more routing structure is still not supported** across σ=0.5 and σ=2.0 combined — confidence drops with noise rather than concentrating onto specific third classes. σ=8.0 remains the last untested condition, but two levels of consistent null result lower the odds it reverses the picture.
+- **cat/dog as generic attractor classes (39.1% of all "other-class" peaks, §5.8 Check 3) is itself a real, notable finding** — worth understanding on its own terms (a property of the tangential-geodesic method's geometry, or of the evaluators' training, not yet determined) — and it means the one previously-promising lead, automobile↔ship→airplane, is the *only* pair-specific result not explainable by this generic-attractor effect.
+- The realism data (§5.6) still suggests the geodesic path isn't achieving clean, confident samples throughout — a live, separate question from whether it routes.
+- **Not yet a final decision** — σ=8.0 is untested, the permutation control needs fixing before being cited as evidence either way, and no visual inspection has happened yet. But this is meaningfully closer to PIVOT than any previous checkpoint in this report, on stronger evidence than before.
 
 ## 8. Recommended next steps, in priority order
 
