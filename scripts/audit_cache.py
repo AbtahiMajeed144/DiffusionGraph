@@ -142,7 +142,6 @@ def check5_permutation_independence(records_real, records_perm, permutation):
     for r in records_perm:
         if r["path"] == "linear_condition":
             continue
-        pa, pb = int(permutation[r["a"]]), int(permutation[r["b"]])
         # NB: permuted dataset's sample_pairs(a,b) draws from real classes
         # pi^-1(a), pi^-1(b) -- so the "corresponding real pair" is
         # (pi^-1(a), pi^-1(b)), i.e. we need the INVERSE permutation here,
@@ -172,6 +171,13 @@ def check5_permutation_independence(records_real, records_perm, permutation):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--run-name", required=True)
+    p.add_argument(
+        "--path", default=None,
+        help="Restrict checks 2-4 to one path type (e.g. tangential_geodesic). Default: run once "
+             "per path type present, PLUS once pooled -- pooling across path types (linear_condition "
+             "is known to run much lower than tangential_geodesic) dilutes exactly the question these "
+             "checks exist to answer, so never trust the pooled numbers alone."
+    )
     args = p.parse_args()
 
     out_dir = RESULTS_DIR / "gate" / args.run_name
@@ -183,9 +189,23 @@ def main():
     print(f"=== Phase 0 Audit: run_name={args.run_name} ===")
     print(f"Loaded {len(records_real)} real combos, {len(records_perm)} permuted combos from cache.")
 
-    check2_histogram(records_real)
-    check3_marginal_argmax(records_real)
-    check4_evaluator_ablation(records_real)
+    if args.path:
+        path_types = [args.path]
+    else:
+        path_types = sorted({r["path"] for r in records_real})
+
+    for path_name in path_types:
+        subset = [r for r in records_real if r["path"] == path_name]
+        print(f"\n{'='*70}\nPATH TYPE: {path_name}  (n={len(subset)} combos)\n{'='*70}")
+        check2_histogram(subset)
+        check3_marginal_argmax(subset)
+        check4_evaluator_ablation(subset)
+
+    if not args.path and len(path_types) > 1:
+        print(f"\n{'='*70}\nPOOLED (all path types combined -- reference only, do not use alone)\n{'='*70}")
+        check2_histogram(records_real)
+        check3_marginal_argmax(records_real)
+        check4_evaluator_ablation(records_real)
 
     permutation = np.random.RandomState(cfg_permutation_seed(cache_dir)).permutation(10)
     check5_permutation_independence(records_real, records_perm, permutation)
