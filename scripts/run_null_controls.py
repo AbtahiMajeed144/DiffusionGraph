@@ -105,6 +105,13 @@ def main():
     p.add_argument("--paths", default="tangential_geodesic",
                    help="comma-separated path types (unconditional only). Default: tangential_geodesic")
     p.add_argument("--run-name", default=None, help="cache run-name (default: phase1_null_<control>)")
+    p.add_argument("--sigmas", default=None,
+                   help="comma-separated sigma levels to run (default: the profile's routing_sigmas). "
+                        "Use e.g. --sigmas 2.0 to target only the sigma the real data you want to "
+                        "compare against actually has -- makes a decisive first read cheap.")
+    p.add_argument("--seeds", default=None,
+                   help="comma-separated seeds to run (default: the profile's routing_seeds). "
+                        "Use e.g. --seeds 0 for a fast first read.")
     args = p.parse_args()
 
     cfg = get_profile(args.profile)
@@ -114,13 +121,22 @@ def main():
         if PATH_USES_CONDITIONAL_MODEL[pth]:
             raise ValueError(f"{pth} uses the conditional model; null controls are for unconditional paths only.")
 
+    sigmas = [float(s) for s in args.sigmas.split(",")] if args.sigmas else list(cfg.routing_sigmas)
+    seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else list(cfg.routing_seeds)
+    # NB: overriding sigmas/seeds changes the run_config fingerprint's
+    # effective coverage but NOT the per-combo math, and combos are cached
+    # by (control,path,sigma,slot,seed) -- so a later fuller run resumes and
+    # adds combos rather than conflicting. The fingerprint guard still keeps
+    # geometry-affecting settings (steps, control points, etc.) consistent.
+
     out_dir = RESULTS_DIR / "gate" / run_name
     cache_dir = out_dir / "cache"
     # NB: this cache is a DIFFERENT experiment from the real sweep; its own
     # run_config fingerprint guards resume, same as run_gate.py.
     verify_or_write_run_config(cache_dir, cfg)
     cache = ComboCache(cache_dir)
-    print(f"=== Null control: {args.control} | profile={args.profile} | paths={paths} | run_name={run_name} ===")
+    print(f"=== Null control: {args.control} | profile={args.profile} | paths={paths} | "
+          f"sigmas={sigmas} | seeds={seeds} | run_name={run_name} ===")
 
     denoiser_uncond = EDMDenoiser(cfg.edm_checkpoint_uncond, device=cfg.device)
     evaluators = load_evaluators(cfg.evaluator_names, device=cfg.device)
@@ -129,9 +145,9 @@ def main():
     units = build_control_units(args.control, cfg, rng)
 
     for path_name in paths:
-        for sigma_tau in cfg.routing_sigmas:
+        for sigma_tau in sigmas:
             for u in units:
-                for seed in cfg.routing_seeds:
+                for seed in seeds:
                     a, b = u["slot"]
                     combo_key = make_combo_key(args.control, path_name, sigma_tau, a, b, seed)
                     if cache.exists(combo_key):
