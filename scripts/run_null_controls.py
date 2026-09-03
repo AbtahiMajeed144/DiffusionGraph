@@ -53,6 +53,7 @@ Defaults to tangential_geodesic only (the instrument under test); add
 """
 from __future__ import annotations
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -78,8 +79,18 @@ def build_control_units(control: str, cfg, rng: np.random.RandomState):
     Each also carries a 'slot' (a,b) used only for the cache key."""
     units = []
     if control == "same_class":
+        # sample BOTH endpoints from class c (no third class to route to).
+        # MASK-MATCHING (review fix 1): mask c AND a second random class, so
+        # C = max over 8 -- identical selection budget to the real sweep
+        # (which masks the 2 endpoint classes). The second mask class is
+        # drawn ONCE here per unit, so it is the SAME at every sigma (review:
+        # "same class set at both sigma"). Without this, same_class masked
+        # only 1 class -> max over 9 -> an upward bias that made the null a
+        # loose (conservative) upper bound rather than a matched comparison.
         for c in range(10):
-            units.append(dict(slot=(c, c), sample_a=c, sample_b=c, mask_a=c, mask_b=c))
+            others = [k for k in range(10) if k != c]
+            m2 = int(rng.choice(others))
+            units.append(dict(slot=(c, c), sample_a=c, sample_b=c, mask_a=c, mask_b=m2))
     elif control == "decoupled":
         # One decoupled unit per real unordered pair, to match the real
         # sweep's 45-unit budget. Geometry classes (p,q) and mask classes
@@ -117,9 +128,10 @@ def main():
     cfg = get_profile(args.profile)
     run_name = args.run_name or f"phase1_null_{args.control}"
     paths = [s.strip() for s in args.paths.split(",")]
-    for pth in paths:
-        if PATH_USES_CONDITIONAL_MODEL[pth]:
-            raise ValueError(f"{pth} uses the conditional model; null controls are for unconditional paths only.")
+    # All path types allowed (review fix 3: A<->A for slerp AND linear, to
+    # decide PIVOT vs KILL on the soft geometry-vs-baseline bar by giving each
+    # path type its OWN artifact floor to subtract). linear_condition uses the
+    # conditional model and ignores sigma -- handled per-path below.
 
     sigmas = [float(s) for s in args.sigmas.split(",")] if args.sigmas else list(cfg.routing_sigmas)
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else list(cfg.routing_seeds)
@@ -134,25 +146,51 @@ def main():
     # NB: this cache is a DIFFERENT experiment from the real sweep; its own
     # run_config fingerprint guards resume, same as run_gate.py.
     verify_or_write_run_config(cache_dir, cfg)
+    # Control-scheme guard: the combo cache keys by (control,path,sigma,slot,
+    # seed) and do NOT encode the masking scheme. The mask-matching fix (fix 1)
+    # changed same_class from mask-1 to mask-2, so an OLD cache's combos are
+    # now numerically wrong and would be silently reused as [cached]. Stamp the
+    # scheme and refuse to mix.
+    scheme = {"control": args.control, "same_class_mask_count": 2, "scheme_version": 2}
+    scheme_path = cache_dir / "control_scheme.json"
+    if scheme_path.exists():
+        old = json.loads(scheme_path.read_text())
+        if old != scheme:
+            raise RuntimeError(
+                f"Cache {cache_dir} was written under a different control scheme "
+                f"({old}) than this run ({scheme}) -- its cached combos are numerically "
+                f"incompatible. Delete {cache_dir} or use a new --run-name.")
+    else:
+        scheme_path.write_text(json.dumps(scheme, indent=2))
+
     cache = ComboCache(cache_dir)
     print(f"=== Null control: {args.control} | profile={args.profile} | paths={paths} | "
           f"sigmas={sigmas} | seeds={seeds} | run_name={run_name} ===")
 
     denoiser_uncond = EDMDenoiser(cfg.edm_checkpoint_uncond, device=cfg.device)
+    denoiser_cond = None  # lazy-loaded only if a conditional path (linear_condition) is requested
     evaluators = load_evaluators(cfg.evaluator_names, device=cfg.device)
     dataset = CIFAR10Canonical(train=True, download=True)
     rng = np.random.RandomState(cfg.permutation_seed)  # reproducible control draws
     units = build_control_units(args.control, cfg, rng)
 
     for path_name in paths:
-        for sigma_tau in sigmas:
+        uses_cond = PATH_USES_CONDITIONAL_MODEL[path_name]
+        if uses_cond and denoiser_cond is None:
+            denoiser_cond = EDMDenoiser(cfg.edm_checkpoint_cond, device=cfg.device)
+        denoiser = denoiser_cond if uses_cond else denoiser_uncond
+        # linear_condition ignores sigma (generates from noise per t); run it
+        # once (sigma_key "final"), like run_gate.py does.
+        sigma_list = [None] if path_name == "linear_condition" else sigmas
+        for sigma_tau in sigma_list:
+            sigma_key = sigma_tau if sigma_tau is not None else "final"
             for u in units:
                 for seed in seeds:
                     a, b = u["slot"]
-                    combo_key = make_combo_key(args.control, path_name, sigma_tau, a, b, seed)
+                    combo_key = make_combo_key(args.control, path_name, sigma_key, a, b, seed)
                     if cache.exists(combo_key):
                         c_result, _ = cache.load(combo_key)
-                        print(f"[{args.control}] {path_name} sigma={sigma_tau} slot=({a},{b}) "
+                        print(f"[{args.control}] {path_name} sigma={sigma_key} slot=({a},{b}) "
                               f"sample=({CIFAR10_CLASSES[u['sample_a']]},{CIFAR10_CLASSES[u['sample_b']]}) "
                               f"mask=({CIFAR10_CLASSES[u['mask_a']]},{CIFAR10_CLASSES[u['mask_b']]}) seed={seed} [cached]")
                         continue
@@ -169,16 +207,18 @@ def main():
                            if path_name == "tangential_geodesic" else {})
                     )
                     t0 = time.time()
-                    # geometry uses the sampled endpoints; masking (class_a/b in
-                    # evaluate_path -> compute_C) uses the mask classes.
+                    # construct() gets the SAMPLE/geometry classes (matters only
+                    # for conditional linear_condition, which conditions on them;
+                    # unconditional paths ignore these args and use x_a/x_b pixels).
+                    # evaluate_path/compute_C get the MASK classes.
                     path_result = ctor.construct(
-                        denoiser_uncond, x_a, x_b, class_a=u["mask_a"], class_b=u["mask_b"],
-                        sigma_tau=sigma_tau, n_steps=cfg.path_t_steps, seed=seed,
+                        denoiser, x_a, x_b, class_a=u["sample_a"], class_b=u["sample_b"],
+                        sigma_tau=sigma_tau if sigma_tau is not None else 0.0, n_steps=cfg.path_t_steps, seed=seed,
                     )
                     traj = evaluate_path(path_result, evaluators, class_a=u["mask_a"], class_b=u["mask_b"], seed=seed)
                     c_result = compute_C(traj)
                     cache.save(combo_key, c_result, traj)
-                    print(f"[{args.control}] {path_name} sigma={sigma_tau} slot=({a},{b}) "
+                    print(f"[{args.control}] {path_name} sigma={sigma_key} slot=({a},{b}) "
                           f"sample=({CIFAR10_CLASSES[u['sample_a']]},{CIFAR10_CLASSES[u['sample_b']]}) "
                           f"mask=({CIFAR10_CLASSES[u['mask_a']]},{CIFAR10_CLASSES[u['mask_b']]}) seed={seed} "
                           f"C={c_result.evaluator_c} ({time.time()-t0:.1f}s)")
