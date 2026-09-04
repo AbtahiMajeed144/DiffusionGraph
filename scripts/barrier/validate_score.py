@@ -49,17 +49,38 @@ def _score_diffusion(denoiser, images, sigma, num_noise, num_probes, batch, devi
     return {"scoped": np.concatenate(out_scoped), "score_norm": np.concatenate(out_norm)}
 
 
+def _eig_mbar(denoiser, images, sigma, K, n_iter, n_real, c, batch, device):
+    """m_bar (sum of top-K posterior-covariance eigenvalues) per image, one sigma."""
+    out = []
+    for i in range(0, images.shape[0], batch):
+        x0 = images[i:i + batch].to(device)
+        out.append(S.eigenscore_mbar(denoiser, x0, sigma, K=K, n_iter=n_iter, n_real=n_real, c=c).cpu().numpy())
+        if device == "cuda":
+            torch.cuda.empty_cache()
+    return np.concatenate(out)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--profile", default="rtx5090")
     p.add_argument("--n-per-group", type=int, default=500)
     p.add_argument("--sigmas", default="0.1,0.5", help="SCOPED/score-norm noise-eval levels")
-    p.add_argument("--candidates", default="scoped,score_norm,resnet_knn,clip_knn",
-                   help="subset of: scoped,score_norm,resnet_knn,clip_knn (eigenscore = fallback, not yet impl.)")
+    p.add_argument("--candidates", default="scoped,score_norm,resnet_knn,clip_knn,eigenscore",
+                   help="subset of: scoped,score_norm,resnet_knn,clip_knn,eigenscore")
     p.add_argument("--num-noise", type=int, default=4)
     p.add_argument("--num-probes", type=int, default=4)
     p.add_argument("--scoped-batch", type=int, default=32)
     p.add_argument("--k", type=int, default=50)
+    # EigenScore params (arXiv:2510.07206)
+    p.add_argument("--eig-sigmas", default="0.2,0.3,0.5",
+                   help="EigenScore noise levels (z-scored + summed). MUST be LOW: the "
+                        "OOD->larger-eigenvalue direction is clean at sigma<=0.5 but INVERTS by "
+                        "sigma=2.0 (unit-tested); summing across the inversion cancels the signal.")
+    p.add_argument("--eig-K", type=int, default=3)
+    p.add_argument("--eig-iters", type=int, default=5)
+    p.add_argument("--eig-real", type=int, default=2, help="noise realizations averaged")
+    p.add_argument("--eig-c", type=float, default=1e-2, help="central-difference step")
+    p.add_argument("--eig-batch", type=int, default=64)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -117,6 +138,28 @@ def main():
     if "clip_knn" in want:
         from diffusiongraph.models.embeddings import ClipZeroShot
         _knn_candidate(S.ClipFeatureExtractor(ClipZeroShot(device=device)), "clip_knn")
+
+    # --- EigenScore (near-OOD specialist / fallback) ---
+    if "eigenscore" in want:
+        eig_sigmas = [float(s) for s in args.eig_sigmas.split(",")]
+        # per-sigma m_bar for every group/graded set; z-score against the REAL
+        # reference bank (real train images, disjoint from G1), then sum over sigma.
+        # OOD -> larger eigenvalues -> larger m_bar -> larger S -> realism = -S.
+        z_groups = {gn: np.zeros(G[gn].shape[0]) for gn in group_names}
+        z_graded = {sb: np.zeros(graded[sb].shape[0]) for sb in graded}
+        kw = dict(K=args.eig_K, n_iter=args.eig_iters, n_real=args.eig_real, c=args.eig_c,
+                  batch=args.eig_batch, device=device)
+        ref_sub = ref_bank_imgs[:min(400, ref_bank_imgs.shape[0])]
+        for sigma in eig_sigmas:
+            mu = _eig_mbar(denoiser, ref_sub, sigma, **kw)
+            m_mu, m_sd = float(np.mean(mu)), float(np.std(mu) + 1e-8)
+            for gn in group_names:
+                z_groups[gn] += (_eig_mbar(denoiser, G[gn], sigma, **kw) - m_mu) / m_sd
+            for sb in graded:
+                z_graded[sb] += (_eig_mbar(denoiser, graded[sb], sigma, **kw) - m_mu) / m_sd
+            print(f"  scored eigenscore at sigma={sigma}")
+        results["eigenscore"] = {"groups": {gn: -z_groups[gn] for gn in group_names},
+                                 "graded": {sb: -z_graded[sb] for sb in graded}}
 
     # --- metrics per candidate ---
     def med(a): return float(np.median(a))

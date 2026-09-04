@@ -126,6 +126,58 @@ def scoped_and_norm(
 
 
 # ---------------------------------------------------------------------------
+# EigenScore (arXiv:2510.07206, ICLR 2026) -- the near-OOD specialist / fallback
+# ---------------------------------------------------------------------------
+# Score = sum of top-K eigenvalues of the posterior covariance
+#   Sigma_t = Cov[x0 | x_t] = sigma^2 * dD/dx   (denoiser Jacobian, symmetric PSD),
+# estimated by FORWARD-ONLY subspace iteration with central-difference JVPs:
+#   (J_D v) ~= (D(x+cv) - D(x-cv)) / (2c).
+# OOD inputs inflate the posterior covariance -> LARGER eigenvalues -> lower
+# realism. Forward-only (no autograd graph) so it is memory-light vs SCOPED.
+
+@torch.no_grad()
+def eigenscore_mbar(
+    denoiser,
+    x0: torch.Tensor,
+    sigma: float,
+    K: int = 3,
+    n_iter: int = 5,
+    n_real: int = 2,
+    c: float = 1e-2,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    """m_bar = sum of the top-K eigenvalues of Sigma = sigma^2 * dD/dx, averaged
+    over `n_real` forward-diffusion realizations. Returns [B]."""
+    B = x0.shape[0]
+    device = x0.device
+    shape = x0.shape[1:]
+    Ddim = int(np.prod([int(s) for s in shape]))
+
+    def apply_JD(x_sigma, Q):
+        # Q: [B, Ddim, K] orthonormal columns -> Y = J_D Q via central diff, [B, Ddim, K]
+        V = Q.permute(0, 2, 1).reshape(B * K, *shape)
+        x_rep = x_sigma.repeat_interleave(K, dim=0)
+        dp = denoiser.denoise(x_rep + c * V, sigma)
+        dm = denoiser.denoise(x_rep - c * V, sigma)
+        return ((dp - dm) / (2 * c)).reshape(B, K, Ddim).permute(0, 2, 1)
+
+    acc = torch.zeros(B, device=device)
+    for _ in range(n_real):
+        eps = torch.randn(x0.shape, generator=generator, dtype=torch.float32).to(device, x0.dtype)
+        x_sigma = x0 + sigma * eps
+        Q = torch.randn(B, Ddim, K, generator=generator, dtype=torch.float32).to(device)
+        Q, _ = torch.linalg.qr(Q)                       # orthonormal init, per image
+        for _ in range(n_iter):
+            Y = apply_JD(x_sigma, Q)
+            Q, _ = torch.linalg.qr(Y)                   # re-orthonormalize (subspace iteration)
+        JQ = apply_JD(x_sigma, Q)                       # [B, Ddim, K]
+        rayleigh = (Q * JQ).sum(dim=1)                  # [B, K] = v_k . (J_D v_k)
+        lam = (sigma ** 2) * rayleigh                   # eigenvalues of Sigma
+        acc += lam.sum(dim=1)                           # sum of top-K
+    return acc / n_real
+
+
+# ---------------------------------------------------------------------------
 # Feature kNN (non-diffusion control)
 # ---------------------------------------------------------------------------
 
