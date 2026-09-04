@@ -39,6 +39,13 @@ def main():
     ap.add_argument("--decode-steps", type=int, default=18)
     ap.add_argument("--refine", default="lazy", choices=["lazy", "full"])
     ap.add_argument("--n-class-pairs", type=int, default=None, help="limit class pairs (smoke tests)")
+    ap.add_argument("--confirm-eigenscore", action="store_true",
+                    help="re-score the 45 bottleneck paths' min-R with EigenScore (the "
+                         "decisive-validated score) and report agreement with feature-kNN tau*")
+    ap.add_argument("--eig-sigmas", default="0.2,0.3,0.5")
+    ap.add_argument("--eig-K", type=int, default=3)
+    ap.add_argument("--eig-iters", type=int, default=5)
+    ap.add_argument("--eig-real", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -113,6 +120,50 @@ def main():
         "n_rounds": len(history),
         "interp_sigmas": args.interp_sigmas,
     }, indent=2))
+
+    # --- EigenScore confirmation on the 45 bottleneck paths (design: decisive-validated) ---
+    if args.confirm_eigenscore:
+      try:
+        print("\nConfirming bottleneck paths with EigenScore...")
+        eig_sigmas = [float(s) for s in args.eig_sigmas.split(",")]
+        # ref-bank per-sigma stats for z-scoring (same convention as validate_score.py)
+        ref = BG.CIFAR10Canonical  # already imported via barrier_graph
+        ref_imgs = _balanced_real(train, 400)
+        stats = {}
+        for sg in eig_sigmas:
+            mb = S.eigenscore_mbar(den, ref_imgs.to(device), sg, K=args.eig_K,
+                                   n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
+            stats[sg] = (float(mb.mean()), float(mb.std() + 1e-8))
+
+        def eig_realism(imgs):
+            Z = np.zeros(imgs.shape[0])
+            for sg in eig_sigmas:
+                mb = S.eigenscore_mbar(den, imgs.to(device), sg, K=args.eig_K,
+                                       n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
+                mu, sd = stats[sg]
+                Z += (mb - mu) / sd
+            return -Z  # OOD -> larger eigenvalues -> lower realism
+
+        paths = BG._bottleneck_paths(ns, w)
+        path_nodes = sorted({n for p in paths.values() for n in p})
+        idx_map = {n: i for i, n in enumerate(path_nodes)}
+        eigR = eig_realism(ns.images[path_nodes])
+        eig_tau = np.full((10, 10), np.nan)
+        for (A, B), p in paths.items():
+            eig_tau[A, B] = eig_tau[B, A] = float(np.min([eigR[idx_map[n]] for n in p]))
+        iu = np.triu_indices(10, 1)
+        m = ~np.isnan(tau[iu]) & ~np.isnan(eig_tau[iu])
+        from scipy.stats import spearmanr
+        rho = spearmanr(tau[iu][m], eig_tau[iu][m]).correlation if m.sum() > 2 else float("nan")
+        print(f"  feature-kNN tau* vs EigenScore path-min: Spearman rho = {rho:+.3f} over {int(m.sum())} pairs")
+        print(f"  EigenScore path-min: median {np.nanmedian(eig_tau[iu]):+.3f} "
+              f"range [{np.nanmin(eig_tau[iu]):+.3f}, {np.nanmax(eig_tau[iu]):+.3f}]")
+        np.save(out_dir / "eig_tau.npy", eig_tau)
+        summary_extra = {"eig_confirm_spearman": float(rho)}
+        (out_dir / "summary.json").write_text(
+            json.dumps({**json.loads((out_dir / "summary.json").read_text()), **summary_extra}, indent=2))
+      except Exception as e:
+        print(f"  EigenScore confirmation FAILED ({type(e).__name__}: {e}); tau* already saved, continuing.")
 
     # readable matrix
     print("\ntau* matrix (rows/cols = classes):")
