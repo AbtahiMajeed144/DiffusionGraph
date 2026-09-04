@@ -70,6 +70,40 @@ def _gaussian_blur(x: torch.Tensor, sigma_blur: float) -> torch.Tensor:
 
 
 @torch.no_grad()
+def condition_midpoints(cond_denoiser, class_pairs, seed=0, decode_steps=18, device="cuda"):
+    """G5: linear class-condition midpoints. For each (class_a, class_b) pair,
+    generate a single image under the blended one-hot condition
+    c = 0.5*onehot(A) + 0.5*onehot(B) from a fresh latent, full reverse ODE.
+
+    Unlike G3 (slerp of two real *images*, which can decode to an off-manifold
+    smear) these are drawn from the model's own conditional manifold at a
+    between-classes condition -- the genuinely-realistic class-mixed positive.
+    Requires the CONDITIONAL checkpoint (label_dim=10). Returns [N,3,32,32] cpu."""
+    assert cond_denoiser.label_dim > 0, "condition_midpoints needs the conditional checkpoint"
+    imgs = []
+    for i, (ca, cb) in enumerate(class_pairs):
+        oa = cond_denoiser.one_hot(int(ca), 1)
+        ob = cond_denoiser.one_hot(int(cb), 1)
+        c_mid = 0.5 * oa + 0.5 * ob
+        gen = torch.Generator(device="cpu").manual_seed(seed + i)
+        latent = torch.randn(1, cond_denoiser.img_channels, cond_denoiser.img_resolution,
+                             cond_denoiser.img_resolution, generator=gen).to(device)
+        img = cond_denoiser.run_sampler(latent, c_mid, num_steps=decode_steps, seed=seed + i)
+        imgs.append(img[0].cpu())
+    return torch.stack(imgs, dim=0)
+
+
+def random_cross_class_pairs(n, seed=0):
+    """n deterministic (class_a, class_b) pairs with class_a != class_b."""
+    g = torch.Generator().manual_seed(seed)
+    pairs = []
+    for _ in range(n):
+        ca, cb = torch.randperm(10, generator=g)[:2].tolist()
+        pairs.append((ca, cb))
+    return pairs
+
+
+@torch.no_grad()
 def build_validation_groups(
     denoiser,
     n_per_group: int = 500,
