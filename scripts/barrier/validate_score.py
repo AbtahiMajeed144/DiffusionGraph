@@ -229,8 +229,13 @@ def main():
 
     # --- deliverable table ---
     (out_dir / "metrics.json").write_text(json.dumps(table, indent=2))
+    sigma_desc = f"diffusion sigmas={sigmas}"
+    if "graham" in want:
+        sigma_desc += f", graham sigmas={[float(s) for s in args.graham_sigmas.split(',')]}"
+    if "eigenscore" in want:
+        sigma_desc += f", eigenscore sigmas={[float(s) for s in args.eig_sigmas.split(',')]}"
     lines = ["# Stage 0 — realism score validation", "",
-             f"profile={args.profile}, n/group={args.n_per_group}, sigmas={sigmas}", "",
+             f"profile={args.profile}, n/group={args.n_per_group}, {sigma_desc}", "",
              "| candidate | AUROC far (>=.90) | **AUROC decisive (>=.75)** | order ok | monotone ok | median G1/G2/G3/G4 | PASS |",
              "|---|---|---|---|---|---|---|"]
     for cand, t in table.items():
