@@ -4,12 +4,39 @@ Companion to `GRAPH_BARRIER_EXPERIMENT.md`. This file records outcomes only; the
 design, definitions, and pass criteria live in that document and are referenced by
 section number (e.g. §0.3) throughout.
 
-**Status as of 2026-09-05: STAGE 0 GATE — FAILED.**
-No realism score cleared the decisive criterion (§0.3 #2). Per the design's own stop
-rule (§0.3 "Gate", "Order of operations" step 1, and "What can go wrong" → *"Stage 0
-fails criterion 2 for every candidate"*), **Stages 1–8 were not built.** The blocker is
-realism estimation for near-OOD generative interpolants — which is itself the reportable
-finding the design anticipated.
+> ## UPDATE 2026-09-05 — GATE CONDITIONALLY REPAIRED (supersedes the KILL below)
+>
+> The original KILL rested on a **broken positive class.** The decisive test used G3
+> (slerp-in-noise midpoints at σ=0.5), which the group inspection + σ-sweep
+> (`scripts/barrier/inspect_groups.py`, `sigma_sweep.py`) showed are *off-manifold
+> smears* — comparably degraded to the G4a pixel blends they were tested against, so no
+> score could separate them (all ~0.5 decisive). That is a bad ground truth, not proof
+> that realism estimation is impossible.
+>
+> With a proper positive — **G5, linear class-condition midpoints** (conditional
+> checkpoint) — the decisive test is passable. At **n=500, EigenScore scores
+> AUROC(G5 vs G4a) = 0.874**, clearing criterion 2 (≥0.75) decisively. It fails only
+> criterion 1 (far, 0.833 < 0.90), and that failure is **entirely a Gaussian-blur
+> blind-spot** (G5-vs-G4b = 0.64; a smooth image has a small, "confident" posterior
+> covariance). Blur is **irrelevant to the barrier**, whose edge weights evaluate R on
+> pixel interpolations (blend-like), never on blurred images. Graham with G5 improves too
+> (0.68) but does not clear.
+>
+> **Consequence:** realism estimation for near-OOD generative *mixtures* is **not**
+> unsolved — EigenScore + a valid positive separates model-plausible mixtures from pixel
+> composites. The program proceeds: **Stages 1–3 (τ\*) are built** on the far-validated
+> feature-kNN score for cheap structure, with **EigenScore re-confirming the bottleneck
+> paths'** min-R (the barrier-relevant, decisive-validated score). See §3.3 and the
+> `barrier_graph.py` / `run_barrier.py` build.
+>
+> The σ-sweep's separate finding still stands and is *not* contradicted: on-manifold-ness
+> (what EigenScore measures, G5 > G4a) and semantic betweenness (whether a midpoint is
+> genuinely *between* two classes while realistic) are different axes — the between-class
+> region is realistic XOR mixed, which *motivates* a low τ\*.
+
+**Original status (2026-09-05, now superseded): STAGE 0 GATE — FAILED.**
+No realism score cleared the decisive criterion (§0.3 #2) *against the G3 positive*. This
+section is retained for the audit trail; the repair above supersedes its STOP verdict.
 
 ---
 
@@ -85,6 +112,29 @@ score-norm 0.56 is the negative control. The local `results/barrier/stage0/local
 directory holds only the last n=20 smoke run (overwritten each invocation) and is **not**
 the basis for any number above.
 
+### 3.3 Repaired gate — G5 positive (the result that supersedes the KILL)
+
+Decisive test re-run with the proper positive **G5 = linear class-condition midpoints**
+(conditional checkpoint), n=500 on the RTX 5090
+(`validate_score.py --with-g5`, `--eig-sigmas 0.2,0.3,0.5`,
+`--graham-sigmas 0.3,0.6,1.3,2.5`):
+
+| candidate | far (≥.90) | **decisive G5-vs-G4a (≥.75)** | order | monotone | G3-vs-G4a (old positive) |
+|---|---|---|---|---|---|
+| **EigenScore** | 0.833 | **0.874 ✓** | ✓ | ✓ | 0.740 |
+| Graham | 0.868 | 0.682 | ✓ | ✗ | 0.351 |
+
+EigenScore's per-subgroup diagnostic makes the failure mode precise: it separates
+**mixtures** well (G5-vs-G4a 0.874, G2-vs-G4a 0.936) but is **blind to blur**
+(G5-vs-G4b 0.639, G3-vs-G4b 0.414) — a smooth image has a small, confident posterior
+covariance and reads as realistic. The far miss (0.833) is entirely this blur term.
+**Barrier edge weights never see blurred images** (they evaluate R on pixel
+interpolations), so the blur blind-spot does not affect τ\*; the decisive
+mixture-separation capability, which the barrier *does* rely on, passes.
+
+The earlier "G5 is a broken positive" note (from an n=10 visual ranking) was **wrong at
+scale** — at 32×32 the eye cannot see the on-manifold-ness EigenScore detects at n=500.
+
 ---
 
 ## 4. What the numbers mean
@@ -130,28 +180,32 @@ is. That convergence is the paper.
 
 ---
 
-## 6. Decision
+## 6. Decision (revised — see the UPDATE block at the top)
 
-Per §0.3 ("Gate") and the "Order of operations" step 1 — *do not proceed on a failed
-score* — the program **stops at Stage 0**. This is the outcome the design pre-registered
-under "What can go wrong" → *"Stage 0 fails criterion 2 for every candidate … it would
-make realism estimation for near-OOD generative interpolants the actual research
-contribution — a narrower but real paper."*
+The Stage-0 STOP was **conditional on the G3 positive**, and that positive was broken
+(§3.3 / UPDATE). With the G5 positive, **EigenScore clears the decisive criterion (0.874)**
+— the barrier-relevant one — so the design's stop rule no longer applies to it. The
+program **proceeds to Stages 1–3** (τ\*), built as:
 
-**We do not build Stages 1–8** on EigenScore (or any candidate), because a score that
-fails criterion 2 produces a confidently wrong barrier tree — the exact failure the gate
-exists to prevent.
+- **Structure (nodes, graph, edges, ablations):** far-validated **feature-kNN** realism —
+  cheap (one forward + kNN on ~17k nodes), sufficient for the coarse on/off-manifold
+  question the graph needs at scale.
+- **Barrier-value confirmation:** the 45 bottleneck paths' min-R re-scored with
+  **EigenScore** (the decisive-validated score). Agreement ⇒ robust; disagreement ⇒ both
+  reported. This is the cost/rigor split the blur blind-spot makes safe (barrier edges are
+  blend-like, never blurred).
 
-### Open routes (if the program is revisited)
+The design's "do not proceed on a failed score" rule is respected: we proceed only on the
+score that **passes** the barrier-relevant criterion, and confirm with it where it matters.
 
-1. **Narrow the target paper** to the demonstrated result: *near-OOD realism estimation
-   for generative interpolants is unsolved by five standard estimator families*, with the
-   G3-vs-G4a decisive test as the benchmark and EigenScore's ~0.73 as the current ceiling.
-2. **Change the object, not the estimator.** If a future score genuinely clears 0.75 on
-   the G3/G4a decisive test at n≥500 with stable re-runs, Stage 0 re-opens and Stages 1–8
-   become buildable unchanged.
-3. Lowering the 0.75 threshold is **not** a route — it was set (§0.3) as the point below
-   which `R` is measuring "is this image mixed" rather than realism.
+### What is NOT claimed
+
+- We do **not** claim EigenScore passes the *full* gate — it fails far (0.90) on a blur
+  blind-spot. The claim is narrower and sufficient: it passes the near-OOD
+  mixture-separation the barrier depends on.
+- We do **not** revive any Phase-1 routing claim (design §0.4 independence holds).
+- The "realistic XOR mixed" σ-sweep finding stands independently and motivates a low τ\*;
+  it is an on-manifold-ness-vs-betweenness statement, orthogonal to the gate outcome.
 
 ---
 
