@@ -30,14 +30,27 @@ from diffusiongraph.paths.base import forward_diffuse
 
 
 def _balanced_real(dataset: CIFAR10Canonical, n: int, offset: int = 0) -> torch.Tensor:
-    """n class-balanced real images, deterministic, starting at `offset` within
-    each class's index list (offset lets us carve out a disjoint reference bank)."""
-    per_class = max(1, n // 10)
-    imgs = []
+    """EXACTLY n class-balanced real images, deterministic, starting at `offset`
+    within each class's index list (offset carves out disjoint sets). Uses
+    ceil(n/10) per class then round-robin interleaves and truncates to n, so the
+    count is always exact -- `per_class = n//10` silently returned fewer than n
+    when n was not a multiple of 10 (crashed the G4b loop at n=500)."""
+    per_class = math.ceil(n / 10)
+    cols = []
     for c in range(10):
         idxs = dataset.indices_for_class(c)[offset:offset + per_class]
-        for i in idxs:
-            imgs.append(dataset[i][0])
+        cols.append([dataset[i][0] for i in idxs])
+    imgs = []
+    for j in range(per_class):
+        for c in range(10):
+            if j < len(cols[c]):
+                imgs.append(cols[c][j])
+                if len(imgs) >= n:
+                    break
+        if len(imgs) >= n:
+            break
+    if len(imgs) < n:
+        raise ValueError(f"_balanced_real: only {len(imgs)} images for n={n}, offset={offset}")
     return torch.stack(imgs[:n], dim=0)
 
 
@@ -122,8 +135,9 @@ def build_validation_groups(
     xa2, xb2 = _rand_pairs(n_a)
     groups["G4a_blend"] = (0.5 * xa2 + 0.5 * xb2).clamp(-1, 1)                      # pixel double-exposure
     real_b = _balanced_real(test, n_b, offset=n_per_group // 10)                   # disjoint-ish reals
-    blur_sigmas = np.array([1, 2, 3])[np.arange(n_b) % 3]
-    groups["G4b_blur"] = torch.stack([_gaussian_blur(real_b[i:i+1], float(blur_sigmas[i]))[0] for i in range(n_b)])
+    m_b = real_b.shape[0]
+    blur_sigmas = np.array([1, 2, 3])[np.arange(m_b) % 3]
+    groups["G4b_blur"] = torch.stack([_gaussian_blur(real_b[i:i+1], float(blur_sigmas[i]))[0] for i in range(m_b)])
     real_c = _balanced_real(test, n_c, offset=2 * (n_per_group // 10))
     # SNR-match noise to blur sigma=2 damage (approx via matching MSE)
     ref_blur = _gaussian_blur(real_c, 2.0)
