@@ -333,6 +333,63 @@ def _bottleneck_paths(ns: NodeSet, w: dict):
     return paths
 
 
+def tau_from_node_R(ns: NodeSet, edges: dict, Rvec: np.ndarray, node_subset: set = None):
+    """tau* using optimistic node-based weights w = min(R[u],R[v]) (no segment
+    refinement). If node_subset is given, only edges with BOTH endpoints in it are
+    used. Cheap -- for the shuffled-R null (5.2) and filler-removal diagnostics."""
+    if node_subset is None:
+        w = {e: min(Rvec[e[0]], Rvec[e[1]]) for e in edges}
+    else:
+        w = {e: min(Rvec[e[0]], Rvec[e[1]]) for e in edges
+             if e[0] in node_subset and e[1] in node_subset}
+    tau, _ = _union_find_barriers(ns, w)
+    return tau
+
+
+def shuffled_R_null(ns: NodeSet, edges: dict, n_perm=50, seed=0):
+    """Design 5.2: permute R across nodes, recompute tau* (node-weighted), and ask
+    whether the REAL tau* spread exceeds the topology-only null. Returns dict with
+    the real cross-pair spread (IQR), the null spread distribution, a percentile,
+    and the median |Spearman| of real-vs-shuffled (should be ~0 if structure is
+    real)."""
+    from scipy.stats import spearmanr
+    iu = np.triu_indices(10, 1)
+    real_tau = tau_from_node_R(ns, edges, ns.R)
+    real_cross = real_tau[iu]
+    def spread(v):
+        v = v[~np.isnan(v)]
+        return float(np.subtract(*np.percentile(v, [75, 25]))) if len(v) > 2 else np.nan
+    real_spread = spread(real_cross)
+    rng = np.random.default_rng(seed)
+    null_spreads, rhos = [], []
+    for _ in range(n_perm):
+        Rp = ns.R.copy(); rng.shuffle(Rp)
+        t = tau_from_node_R(ns, edges, Rp)[iu]
+        null_spreads.append(spread(t))
+        m = ~np.isnan(real_cross) & ~np.isnan(t)
+        if m.sum() > 2:
+            rhos.append(abs(spearmanr(real_cross[m], t[m]).correlation))
+    null_spreads = np.array(null_spreads)
+    pct = float((null_spreads < real_spread).mean() * 100)
+    return {"real_spread_iqr": real_spread, "null_spread_median": float(np.nanmedian(null_spreads)),
+            "null_spread_p95": float(np.nanpercentile(null_spreads, 95)),
+            "real_spread_percentile_vs_null": pct,
+            "median_abs_spearman_real_vs_shuffled": float(np.median(rhos)) if rhos else np.nan}
+
+
+def filler_removed_tau(ns: NodeSet, edges: dict):
+    """Filler-hub diagnosis: recompute tau* (node-weighted) with all filler nodes
+    removed. If cross-class tau* collapses, the 'connectivity' was filler-hopping."""
+    keep = {i for i in range(ns.images.shape[0]) if ns.provenance[i]["type"] != "filler"}
+    iu = np.triu_indices(10, 1)
+    full = tau_from_node_R(ns, edges, ns.R)[iu]
+    nofill = tau_from_node_R(ns, edges, ns.R, node_subset=keep)[iu]
+    return {"cross_median_full": float(np.nanmedian(full)),
+            "cross_median_no_filler": float(np.nanmedian(nofill)),
+            "delta": float(np.nanmedian(nofill) - np.nanmedian(full)),
+            "n_pairs_disconnected_no_filler": int(np.isnan(nofill).sum() - np.isnan(full).sum())}
+
+
 def maxmin_over_subgraph(w: dict, allowed: set, src: set, dst: set) -> float:
     """Max-min (bottleneck) realism between node-sets src and dst using only edges
     whose BOTH endpoints are in `allowed`. Returns the weight of the edge that

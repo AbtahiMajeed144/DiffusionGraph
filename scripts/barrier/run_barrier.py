@@ -39,6 +39,9 @@ def main():
     ap.add_argument("--decode-steps", type=int, default=18)
     ap.add_argument("--refine", default="lazy", choices=["lazy", "full"])
     ap.add_argument("--n-class-pairs", type=int, default=None, help="limit class pairs (smoke tests)")
+    ap.add_argument("--controls", action="store_true",
+                    help="run the interpretability nulls: shuffled-R (5.2) + filler-removal")
+    ap.add_argument("--n-perm", type=int, default=50)
     ap.add_argument("--confirm-eigenscore", action="store_true",
                     help="re-score the 45 bottleneck paths' min-R with EigenScore (the "
                          "decisive-validated score) and report agreement with feature-kNN tau*")
@@ -120,6 +123,22 @@ def main():
         "n_rounds": len(history),
         "interp_sigmas": args.interp_sigmas,
     }, indent=2))
+
+    # --- interpretability nulls (design 5.2 + filler-hub diagnosis) ---
+    if args.controls:
+        print("\nControls: shuffled-R null (5.2) + filler-removal...")
+        null = BG.shuffled_R_null(ns, edges, n_perm=args.n_perm, seed=args.seed)
+        fill = BG.filler_removed_tau(ns, edges)
+        print(f"  shuffled-R null: real tau* spread (IQR)={null['real_spread_iqr']:.4f} vs "
+              f"null median={null['null_spread_median']:.4f} (p95={null['null_spread_p95']:.4f})")
+        print(f"    -> real spread at {null['real_spread_percentile_vs_null']:.0f}th percentile of null "
+              f"(>95 = structure is real; ~50 = structure is topology-only)")
+        print(f"    -> median |Spearman| real-vs-shuffled = {null['median_abs_spearman_real_vs_shuffled']:.3f} "
+              f"(~0 expected)")
+        print(f"  filler-removal: cross tau* {fill['cross_median_full']:+.4f} (full) -> "
+              f"{fill['cross_median_no_filler']:+.4f} (no filler), delta={fill['delta']:+.4f}, "
+              f"{fill['n_pairs_disconnected_no_filler']} pairs disconnected")
+        (out_dir / "controls.json").write_text(json.dumps({"shuffled_R": null, "filler_removed": fill}, indent=2))
 
     # --- EigenScore confirmation on the 45 bottleneck paths (design: decisive-validated) ---
     if args.confirm_eigenscore:
