@@ -87,6 +87,10 @@ def main():
     p.add_argument("--graham-steps", type=int, default=18, help="reverse-ODE steps per reconstruction")
     p.add_argument("--graham-batch", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--with-g5", action="store_true",
+                   help="Stage-0 gate repair: add G5 (linear class-condition midpoints, "
+                        "CONDITIONAL checkpoint) and make AUROC(G5 vs G4a) the decisive test. "
+                        "G3 slerp midpoints are an unreliable positive (see inspect_groups.py).")
     args = p.parse_args()
 
     cfg = get_profile(args.profile)
@@ -105,6 +109,22 @@ def main():
     ref_bank_imgs = G.pop("_ref_bank")
     graded = G.pop("graded_blur")
     group_names = ["G1_real", "G2_synth", "G3_interp", "G4a_blend", "G4b_blur", "G4c_noise"]
+
+    # Gate repair: G5 linear class-condition midpoints (proper realistic positive).
+    if args.with_g5:
+        from diffusiongraph.barrier.groups import condition_midpoints, random_cross_class_pairs
+        cond_den = EDMDenoiser(cfg.edm_checkpoint_cond, device=device)
+        pairs = random_cross_class_pairs(args.n_per_group, seed=args.seed)
+        g5 = []
+        for i in range(0, len(pairs), 64):
+            g5.append(condition_midpoints(cond_den, pairs[i:i + 64], seed=args.seed + i,
+                                          decode_steps=18, device=device))
+        G["G5_cond"] = torch.cat(g5, dim=0)
+        group_names.append("G5_cond")
+        del cond_den
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
     for gn in group_names:
         print(f"  {gn}: {tuple(G[gn].shape)}")
 
@@ -195,53 +215,83 @@ def main():
 
     # --- metrics per candidate ---
     def med(a): return float(np.median(a))
+    has_g5 = "G5_cond" in group_names
+    pos_key = "G5_cond" if has_g5 else "G3_interp"   # decisive positive (repaired if G5 present)
     table = {}
+    diagnostics = {}
     for cand, r in results.items():
         gr = r["groups"]
         pos_far = np.concatenate([gr["G1_real"], gr["G2_synth"]])
         neg_far = np.concatenate([gr[d] for d in DEGRADED])
         auroc_far = S.auroc(pos_far, neg_far)                          # criterion 1, need >=0.90
-        auroc_dec = S.auroc(gr["G3_interp"], gr["G4a_blend"])          # criterion 2 (decisive), need >=0.75
+        auroc_dec = S.auroc(gr[pos_key], gr["G4a_blend"])              # criterion 2 (decisive), need >=0.75
+
+        # per-subgroup diagnostics (free from the same scores): which positive vs which
+        # degraded subgroup, so a failure can be localized to a bad group rather than R.
+        diag = {"decisive_positive": pos_key}
+        for pk in (["G3_interp", "G5_cond"] if has_g5 else ["G3_interp"]):
+            for nk in DEGRADED:
+                diag[f"auroc_{pk}_vs_{nk}"] = round(S.auroc(gr[pk], gr[nk]), 4)
+        diag["auroc_G2_vs_G4a"] = round(S.auroc(gr["G2_synth"], gr["G4a_blend"]), 4)
+        diagnostics[cand] = diag
+
         m1, m2, m3 = med(gr["G1_real"]), med(gr["G2_synth"]), med(neg_far)
-        m_g3 = med(gr["G3_interp"])
-        ordering_ok = (min(m1, m2) > m_g3 > m3)                        # criterion 3
+        m_pos = med(gr[pos_key])
+        ordering_ok = (min(m1, m2) > m_pos > m3)                       # criterion 3 (on decisive positive)
         graded_meds = [med(r["graded"][sb]) for sb in [0, 1, 2, 3]]
         monotone_ok = all(graded_meds[i] > graded_meds[i + 1] for i in range(3))  # criterion 4
         passes = (auroc_far >= 0.90) and (auroc_dec >= 0.75) and ordering_ok and monotone_ok
         table[cand] = dict(
             auroc_far=round(auroc_far, 4), auroc_decisive=round(auroc_dec, 4),
-            median_G1=round(m1, 4), median_G2=round(m2, 4), median_G3=round(m_g3, 4), median_G4=round(m3, 4),
+            decisive_positive=pos_key,
+            median_G1=round(m1, 4), median_G2=round(m2, 4),
+            median_pos=round(m_pos, 4), median_G4=round(m3, 4),
             ordering_ok=bool(ordering_ok), graded_blur_medians=[round(x, 4) for x in graded_meds],
             monotone_ok=bool(monotone_ok), PASSES_ALL=bool(passes),
         )
+        # persist raw per-image scores so future subgroup recomputes are free
+        np.savez(out_dir / f"scores_{cand.replace('@','_').replace('.','p')}.npz",
+                 **{gn: np.asarray(gr[gn]) for gn in group_names})
 
     # --- histograms ---
+    hist_groups = ["G1_real", "G2_synth", "G3_interp", "G4a_blend"] + (["G5_cond"] if has_g5 else [])
+    hist_colors = ["C2", "C0", "C1", "C3", "C4"]
     for cand, r in results.items():
         fig, ax = plt.subplots(figsize=(7, 4))
-        for gn, color in zip(["G1_real", "G2_synth", "G3_interp", "G4a_blend"], ["C2", "C0", "C1", "C3"]):
+        for gn, color in zip(hist_groups, hist_colors):
             vals = r["groups"][gn]
             vals = vals[np.isfinite(vals)]
             ax.hist(vals, bins=30, alpha=0.5, density=True, label=gn, color=color)
-        ax.set_title(f"{cand}  (decisive G3-vs-G4a AUROC={table[cand]['auroc_decisive']})")
+        ax.set_title(f"{cand}  (decisive {pos_key}-vs-G4a AUROC={table[cand]['auroc_decisive']})")
         ax.set_xlabel("R (higher = more realistic)"); ax.legend(fontsize=8)
         fig.tight_layout(); fig.savefig(out_dir / f"hist_{cand.replace('@','_').replace('.','p')}.png", dpi=140)
         plt.close(fig)
 
     # --- deliverable table ---
     (out_dir / "metrics.json").write_text(json.dumps(table, indent=2))
+    (out_dir / "diagnostics.json").write_text(json.dumps(diagnostics, indent=2))
     sigma_desc = f"diffusion sigmas={sigmas}"
     if "graham" in want:
         sigma_desc += f", graham sigmas={[float(s) for s in args.graham_sigmas.split(',')]}"
     if "eigenscore" in want:
         sigma_desc += f", eigenscore sigmas={[float(s) for s in args.eig_sigmas.split(',')]}"
+    dec_label = f"AUROC decisive {pos_key}-vs-G4a (>=.75)"
     lines = ["# Stage 0 — realism score validation", "",
-             f"profile={args.profile}, n/group={args.n_per_group}, {sigma_desc}", "",
-             "| candidate | AUROC far (>=.90) | **AUROC decisive (>=.75)** | order ok | monotone ok | median G1/G2/G3/G4 | PASS |",
+             f"profile={args.profile}, n/group={args.n_per_group}, {sigma_desc}",
+             f"decisive positive = **{pos_key}** ({'G5 linear-condition midpoints, repaired gate' if has_g5 else 'G3 slerp midpoints, original'})", "",
+             f"| candidate | AUROC far (>=.90) | **{dec_label}** | order ok | monotone ok | median G1/G2/{pos_key}/G4 | PASS |",
              "|---|---|---|---|---|---|---|"]
     for cand, t in table.items():
         lines.append(f"| {cand} | {t['auroc_far']} | **{t['auroc_decisive']}** | {t['ordering_ok']} | "
-                     f"{t['monotone_ok']} | {t['median_G1']}/{t['median_G2']}/{t['median_G3']}/{t['median_G4']} | "
+                     f"{t['monotone_ok']} | {t['median_G1']}/{t['median_G2']}/{t['median_pos']}/{t['median_G4']} | "
                      f"{'**YES**' if t['PASSES_ALL'] else 'no'} |")
+    # per-subgroup diagnostic table (localizes any failure to a group vs the score)
+    diag_keys = [k for k in next(iter(diagnostics.values())) if k.startswith("auroc_")]
+    lines += ["", "### Per-subgroup AUROCs (diagnostic)", "",
+              "| candidate | " + " | ".join(diag_keys) + " |",
+              "|" + "---|" * (len(diag_keys) + 1)]
+    for cand, d in diagnostics.items():
+        lines.append(f"| {cand} | " + " | ".join(str(d[k]) for k in diag_keys) + " |")
     passers = [c for c, t in table.items() if t["PASSES_ALL"]]
     # BORDERLINE: passes ordering + monotonicity and is within AUROC Monte-Carlo
     # noise (~0.03 at n=500) of both thresholds -- a variance-reduction re-run
@@ -255,10 +305,15 @@ def main():
                    " pass ordering+monotonicity and sit within AUROC noise (~0.03 at n=500) of both. "
                    "Recommend a variance-reduction re-run (raise --eig-real/--eig-iters, try --eig-K 1) "
                    "before declaring the gate failed.")
+    elif has_g5:
+        verdict = ("FAIL — even with the repaired G5 positive (clean linear-condition midpoints), "
+                   "no candidate separates realistic class-mixed images from G4a pixel double-exposures. "
+                   "This is now the strong form of the finding: near-OOD realism estimation is unsolved "
+                   "even against a genuinely on-manifold positive. STOP per the design gate.")
     else:
-        verdict = ("FAIL — no candidate passes or is borderline. Per the design, STOP: realism "
-                   "estimation for near-OOD generative interpolants is the blocker (a narrower but "
-                   "real paper). Graham (~4h) is the only untried option before declaring it.")
+        verdict = ("FAIL — no candidate passes on the ORIGINAL G3 positive. Before declaring the gate "
+                   "failed, re-run with --with-g5: G3 slerp midpoints are an unreliable positive "
+                   "(inspect_groups.py), and the decisive test should use G5 condition midpoints.")
     lines += ["", f"**Gate:** {verdict}"]
     (out_dir / "table.md").write_text("\n".join(lines))
     print("\n".join(lines))
