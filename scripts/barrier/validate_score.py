@@ -81,6 +81,11 @@ def main():
     p.add_argument("--eig-real", type=int, default=2, help="noise realizations averaged")
     p.add_argument("--eig-c", type=float, default=1e-2, help="central-difference step")
     p.add_argument("--eig-batch", type=int, default=64)
+    # Graham (arXiv:2211.07740) reconstruction-based, reserve
+    p.add_argument("--graham-sigmas", default="0.3,0.5,0.8,1.3,2.0,3.5",
+                   help="reconstruction noise levels (z-scored per level + averaged)")
+    p.add_argument("--graham-steps", type=int, default=18, help="reverse-ODE steps per reconstruction")
+    p.add_argument("--graham-batch", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
@@ -160,6 +165,33 @@ def main():
             print(f"  scored eigenscore at sigma={sigma}")
         results["eigenscore"] = {"groups": {gn: -z_groups[gn] for gn in group_names},
                                  "graded": {sb: -z_graded[sb] for sb in graded}}
+
+    # --- Graham reconstruction-based (reserve) ---
+    if "graham" in want:
+        gsig = [float(s) for s in args.graham_sigmas.split(",")]
+        arch = next((n for n in cfg.evaluator_names if n != "clip_zeroshot"), "resnet18")
+        gckpt = CHECKPOINTS_DIR / f"{arch}_cifar10.pt"
+        if not gckpt.exists():
+            print(f"  (skipping graham: {gckpt} not found)")
+        else:
+            feat = S.ResnetFeatureExtractor(arch, gckpt, device=device)
+
+            def gerr(images):
+                outs = []
+                for i in range(0, images.shape[0], args.graham_batch):
+                    outs.append(S.graham_error_features(
+                        denoiser, images[i:i + args.graham_batch].to(device),
+                        gsig, args.graham_steps, feat).cpu().numpy())
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                return np.concatenate(outs)  # [N, 2*n_sigma]
+
+            ref = gerr(ref_bank_imgs[:min(400, ref_bank_imgs.shape[0])])
+            mu, sd = ref.mean(axis=0), ref.std(axis=0) + 1e-8
+            z_realism = lambda imgs: -(((gerr(imgs) - mu) / sd).mean(axis=1))  # OOD->higher err->lower R
+            results["graham"] = {"groups": {gn: z_realism(G[gn]) for gn in group_names},
+                                 "graded": {sb: z_realism(graded[sb]) for sb in graded}}
+            print("  scored graham")
 
     # --- metrics per candidate ---
     def med(a): return float(np.median(a))

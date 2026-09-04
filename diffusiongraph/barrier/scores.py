@@ -240,6 +240,37 @@ def feature_knn_realism(extractor, bank: torch.Tensor, images: torch.Tensor, k: 
 
 
 # ---------------------------------------------------------------------------
+# Graham reconstruction-based OOD (arXiv:2211.07740, CVPR-W 2023) -- reserve
+# ---------------------------------------------------------------------------
+# Noise the input to a RANGE of levels, denoise back (full reverse ODE), and
+# use the multi-level, multi-metric reconstruction error. In-distribution
+# inputs reconstruct well; OOD reconstruct poorly. Per-(level, metric) errors
+# are z-scored against an in-distribution reference then averaged; realism
+# R = -mean_z (OOD -> higher error -> lower R).
+#
+# Metrics: MSE (pixel) + perceptual distance (1 - cosine of resnet50 penult.
+# features). The paper uses LPIPS for the perceptual term; we substitute a
+# CIFAR-native feature distance to avoid a new dependency -- swap in lpips if
+# available and preferred.
+
+@torch.no_grad()
+def graham_error_features(denoiser, x0, sigmas, num_steps, feat_extractor, generator=None):
+    """[B, 2*len(sigmas)] reconstruction-error features (MSE, perceptual per
+    noise level). Reconstruction reuses forward-diffuse + denoise_to_clean."""
+    outs = []
+    for sig in sigmas:
+        eps = torch.randn(x0.shape, generator=generator, dtype=torch.float32).to(x0.device, x0.dtype)
+        x_t = x0 + sig * eps
+        x_hat = denoiser.denoise_to_clean(x_t, sig, class_labels=None, num_steps=num_steps)
+        mse = (x0 - x_hat).flatten(1).pow(2).mean(dim=1)                       # [B]
+        f0 = F.normalize(feat_extractor.features(x0), dim=-1)
+        fh = F.normalize(feat_extractor.features(x_hat), dim=-1)
+        perc = 1.0 - (f0 * fh).sum(dim=1)                                      # [B] cosine distance
+        outs.append(mse); outs.append(perc)
+    return torch.stack(outs, dim=1)                                           # [B, 2*n_sigma]
+
+
+# ---------------------------------------------------------------------------
 # AUROC (rank-based Mann-Whitney; higher score => positive class)
 # ---------------------------------------------------------------------------
 
