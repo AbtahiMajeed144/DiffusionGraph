@@ -195,7 +195,7 @@ def _segment_min_R(ns, realism_fn, u, v, delta, cache):
 
 
 def barrier_matrix(ns: NodeSet, edges: dict, realism_fn, *, delta, refine="lazy",
-                   max_rounds=6, verbose=True):
+                   max_rounds=6, tol=1e-4, verbose=True):
     """Iterate: optimistic min(R) weights -> union-find barriers -> refine the 45
     bottleneck PATHS with segment sampling -> repeat until paths stabilize.
     Returns (tau [10,10], history)."""
@@ -210,7 +210,7 @@ def barrier_matrix(ns: NodeSet, edges: dict, realism_fn, *, delta, refine="lazy"
         return tau, [tau.copy()], w
 
     history = []
-    prev_paths = None
+    prev_tau = None
     for rnd in range(max_rounds):
         tau, paths = _union_find_barriers(ns, w, return_paths=True)
         history.append(tau.copy())
@@ -226,11 +226,19 @@ def barrier_matrix(ns: NodeSet, edges: dict, realism_fn, *, delta, refine="lazy"
             nw = _segment_min_R(ns, realism_fn, e[0], e[1], delta, seg_cache)
             if nw < w[e] - 1e-9:
                 w[e] = nw; changed = True
+        # converge on the tau* VALUES, not the path identities: in a dense graph the
+        # max-min bottleneck route keeps switching among near-tied alternatives even
+        # after tau* has settled, so a path-identity criterion never trips.
+        tau_next = _union_find_barriers(ns, w)[0]
+        iu = np.triu_indices(10, 1)
+        d = tau_next[iu] - tau[iu]
+        max_delta = float(np.nanmax(np.abs(d))) if np.isfinite(d).any() else 0.0
         if verbose:
-            print(f"  refine round {rnd}: {len(to_refine)} path edges, changed={changed}")
-        if not changed or paths == prev_paths:
+            print(f"  refine round {rnd}: {len(to_refine)} path edges, changed={changed}, "
+                  f"max|Δτ*|={max_delta:.5f}")
+        if not changed or max_delta < tol:
             break
-        prev_paths = paths
+        prev_tau = tau_next
     tau, _ = _union_find_barriers(ns, w)
     history.append(tau.copy())
     return tau, history, w
