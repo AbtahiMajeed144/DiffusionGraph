@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--eig-K", type=int, default=3)
     ap.add_argument("--eig-iters", type=int, default=5)
     ap.add_argument("--eig-real", type=int, default=2)
+    ap.add_argument("--eig-batch", type=int, default=64, help="node-scoring chunk for --realism eigenscore")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -75,13 +76,20 @@ def main():
                                    n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
             _stats[sg] = (float(mb.mean()), float(mb.std() + 1e-8))
         def realism_fn(imgs):
+            # batch: eigenscore_mbar expands each image by K for the JVP, so the full
+            # 16k node set at once OOMs. Score in chunks of --eig-batch.
             Z = np.zeros(imgs.shape[0])
-            for sg in eig_sigmas:
-                mb = S.eigenscore_mbar(den, imgs.to(device), sg, K=args.eig_K,
-                                       n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
-                mu, sd = _stats[sg]; Z += (mb - mu) / sd
+            for i in range(0, imgs.shape[0], args.eig_batch):
+                chunk = imgs[i:i + args.eig_batch].to(device)
+                for sg in eig_sigmas:
+                    mb = S.eigenscore_mbar(den, chunk, sg, K=args.eig_K,
+                                           n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
+                    mu, sd = _stats[sg]; Z[i:i + chunk.shape[0]] += (mb - mu) / sd
+                if device == "cuda":
+                    torch.cuda.empty_cache()
             return -Z
-        print(f"  realism = EigenScore (eig_sigmas={eig_sigmas}) -- decisive-validated, expensive")
+        print(f"  realism = EigenScore (eig_sigmas={eig_sigmas}, batch={args.eig_batch}) "
+              f"-- decisive-validated, expensive")
     else:
         realism_fn = lambda imgs: S.feature_knn_realism(feat, bank, imgs.to(device), k=args.knn_k)
         print("  realism = feature-kNN (cheap; NOT validated on the G5 decisive test)")
