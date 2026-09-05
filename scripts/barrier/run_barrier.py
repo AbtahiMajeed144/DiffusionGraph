@@ -38,6 +38,9 @@ def main():
     ap.add_argument("--knn-k", type=int, default=5, help="k for the feature-kNN realism score")
     ap.add_argument("--decode-steps", type=int, default=18)
     ap.add_argument("--refine", default="lazy", choices=["lazy", "full"])
+    ap.add_argument("--max-rounds", type=int, default=6, help="lazy-refinement cap (raise for convergence)")
+    ap.add_argument("--realism", default="feature_knn", choices=["feature_knn", "eigenscore"],
+                    help="node/edge realism score; eigenscore = decisive-validated but expensive + local-qr-fails")
     ap.add_argument("--n-class-pairs", type=int, default=None, help="limit class pairs (smoke tests)")
     ap.add_argument("--controls", action="store_true",
                     help="run the interpretability nulls: shuffled-R (5.2) + filler-removal")
@@ -60,10 +63,28 @@ def main():
     den = EDMDenoiser(cfg.edm_checkpoint_uncond, device=device)
     feat = S.ResnetFeatureExtractor(arch, CHECKPOINTS_DIR / f"{arch}_cifar10.pt", device=device)
 
-    # realism function: feature-kNN to a fixed real bank
+    # realism function: feature-kNN (cheap, structure) or EigenScore (decisive-validated).
     train = CIFAR10Canonical(train=True, download=True)
     bank = S.build_feature_bank(feat, _balanced_real(train, 2000))
-    realism_fn = lambda imgs: S.feature_knn_realism(feat, bank, imgs.to(device), k=args.knn_k)
+    if args.realism == "eigenscore":
+        eig_sigmas = [float(s) for s in args.eig_sigmas.split(",")]
+        ref_imgs = _balanced_real(train, 400)
+        _stats = {}
+        for sg in eig_sigmas:
+            mb = S.eigenscore_mbar(den, ref_imgs.to(device), sg, K=args.eig_K,
+                                   n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
+            _stats[sg] = (float(mb.mean()), float(mb.std() + 1e-8))
+        def realism_fn(imgs):
+            Z = np.zeros(imgs.shape[0])
+            for sg in eig_sigmas:
+                mb = S.eigenscore_mbar(den, imgs.to(device), sg, K=args.eig_K,
+                                       n_iter=args.eig_iters, n_real=args.eig_real).cpu().numpy()
+                mu, sd = _stats[sg]; Z += (mb - mu) / sd
+            return -Z
+        print(f"  realism = EigenScore (eig_sigmas={eig_sigmas}) -- decisive-validated, expensive")
+    else:
+        realism_fn = lambda imgs: S.feature_knn_realism(feat, bank, imgs.to(device), k=args.knn_k)
+        print("  realism = feature-kNN (cheap; NOT validated on the G5 decisive test)")
 
     print("Stage 1: building node set...")
     ns = BG.build_node_set(
@@ -89,7 +110,11 @@ def main():
     print(f"  {len(edges)} edges, delta (median edge pixel-L2) = {delta:.3f}")
 
     print("Stage 3: barrier extraction...")
-    tau, history, w = BG.barrier_matrix(ns, edges, realism_fn, delta=delta, refine=args.refine)
+    tau, history, w = BG.barrier_matrix(ns, edges, realism_fn, delta=delta, refine=args.refine,
+                                        max_rounds=args.max_rounds)
+    if args.refine == "lazy" and len(history) >= args.max_rounds + 1:
+        print(f"  WARNING: refinement hit the {args.max_rounds}-round cap -- tau* may be unconverged "
+              f"(still an upper bound; raise --max-rounds)")
 
     out_dir = RESULTS_DIR / "barrier" / "tau" / args.profile
     out_dir.mkdir(parents=True, exist_ok=True)
