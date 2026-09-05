@@ -418,10 +418,17 @@ def maxmin_over_subgraph(w: dict, allowed: set, src: set, dst: set) -> float:
     return float("nan")
 
 
-def within_class_floor(ns: NodeSet, w: dict) -> np.ndarray:
+def within_class_floor(ns: NodeSet, w: dict, fair: bool = False) -> np.ndarray:
     """Design 5.1: split each class's anchors in two halves and compute the
-    within-class barrier using only that class's own anchors + same-class
-    interpolant nodes (NOT filler/cross) for the between-region. Returns [10]."""
+    within-class barrier. Returns [10].
+
+    fair=False (design 5.1 literal): between-region restricted to that class's own
+    same-class interpolant nodes -- tests whether same-class interpolants alone stay
+    realistic. Low => the interpolants are off-manifold (not a P6 result).
+    fair=True: allow the FULL node set (filler + all interpolants) between the two
+    halves, exactly as cross-class tau* does -- the apples-to-apples P6 comparison.
+    within(fair) should EXCEED cross-class tau* if class basins are resolved."""
+    all_nodes = set(range(ns.images.shape[0]))
     same_of = {c: set() for c in range(10)}
     for i, p in enumerate(ns.provenance):
         if p["type"] == "same" and p["a"] == p["b"]:
@@ -433,9 +440,52 @@ def within_class_floor(ns: NodeSet, w: dict) -> np.ndarray:
             continue
         h = len(anc) // 2
         src, dst = set(anc[:h]), set(anc[h:])
-        allowed = src | dst | same_of[c]
+        # exclude the OTHER classes' anchors so cross-class hops can't shortcut
+        other_anchors = {i for i in np.where(ns.anchor_class >= 0)[0] if i not in src and i not in dst}
+        allowed = (all_nodes - other_anchors) if fair else (src | dst | same_of[c])
         floors[c] = maxmin_over_subgraph(w, allowed, src, dst)
     return floors
+
+
+def comparison_graphs(ns: NodeSet, tau: np.ndarray, clip_extractor=None):
+    """Design 7 / P2: build cheap alternative 10x10 class-affinity matrices and
+    Spearman-correlate against tau* on the 45 off-diagonal entries. If tau* is a
+    monotone re-derivation of pixel or CLIP centroid distance (rho > 0.9), the
+    barrier machinery adds nothing.
+
+    G_pixel   : -||pixel centroid_A - centroid_B|| over anchors
+    G_clip    : -||CLIP centroid_A - centroid_B|| (if clip_extractor given)
+    Returns {name: (matrix, spearman_vs_tau)}."""
+    from scipy.stats import spearmanr
+    iu = np.triu_indices(10, 1)
+    anchors = {c: np.where(ns.anchor_class == c)[0] for c in range(10)}
+
+    def affinity_from(feats_per_class):
+        cen = np.stack([feats_per_class[c].mean(0) for c in range(10)])
+        G = np.full((10, 10), np.nan)
+        for a in range(10):
+            for b in range(10):
+                if a != b:
+                    G[a, b] = -float(np.linalg.norm(cen[a] - cen[b]))
+        return G
+
+    out = {}
+    pix = {c: ns.images[anchors[c]].flatten(1).numpy() for c in range(10)}
+    out["G_pixel"] = affinity_from(pix)
+    if clip_extractor is not None:
+        import torch as _t
+        clip_f = {}
+        for c in range(10):
+            with _t.no_grad():
+                clip_f[c] = clip_extractor.features(ns.images[anchors[c]]).cpu().numpy()
+        out["G_clip"] = affinity_from(clip_f)
+
+    res = {}
+    for name, G in out.items():
+        m = ~np.isnan(tau[iu]) & ~np.isnan(G[iu])
+        rho = spearmanr(tau[iu][m], G[iu][m]).correlation if m.sum() > 2 else float("nan")
+        res[name] = (G, float(rho))
+    return res
 
 
 def route_provenance(ns: NodeSet, w: dict) -> dict:

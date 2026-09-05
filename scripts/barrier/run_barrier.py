@@ -41,7 +41,9 @@ def main():
     ap.add_argument("--n-class-pairs", type=int, default=None, help="limit class pairs (smoke tests)")
     ap.add_argument("--controls", action="store_true",
                     help="run the interpretability nulls: shuffled-R (5.2) + filler-removal")
-    ap.add_argument("--n-perm", type=int, default=50)
+    ap.add_argument("--n-perm", type=int, default=200)
+    ap.add_argument("--compare", action="store_true",
+                    help="P2: Spearman tau* vs G_pixel / G_clip centroid-distance graphs")
     ap.add_argument("--confirm-eigenscore", action="store_true",
                     help="re-score the 45 bottleneck paths' min-R with EigenScore (the "
                          "decisive-validated score) and report agreement with feature-kNN tau*")
@@ -89,8 +91,9 @@ def main():
     print("Stage 3: barrier extraction...")
     tau, history, w = BG.barrier_matrix(ns, edges, realism_fn, delta=delta, refine=args.refine)
 
-    # design 5.1: within-class floor; 4.1: route provenance (filler-hub diagnosis)
-    within = BG.within_class_floor(ns, w)
+    # design 5.1: within-class floor (restricted + fair); 4.1: route provenance
+    within = BG.within_class_floor(ns, w, fair=False)
+    within_fair = BG.within_class_floor(ns, w, fair=True)
     prov = BG.route_provenance(ns, w)
     iu = np.triu_indices(10, 1)
     cross = tau[iu]
@@ -99,10 +102,11 @@ def main():
     prov_other = np.mean([c["other_pair"] for c in prov.values()]) if prov else float("nan")
     print("\ntau* cross-class (upper triangle):")
     print(f"  median {np.nanmedian(cross):+.4f}  range [{np.nanmin(cross):+.4f}, {np.nanmax(cross):+.4f}]")
-    print(f"  within-class floor (5.1): median {np.nanmedian(within):+.4f}  range "
-          f"[{np.nanmin(within):+.4f}, {np.nanmax(within):+.4f}]")
-    print(f"  --> gap (within - cross median): {np.nanmedian(within) - np.nanmedian(cross):+.4f}  "
-          f"(design P6: within should EXCEED cross if class basins are resolved)")
+    print(f"  within-class floor (5.1 restricted): median {np.nanmedian(within):+.4f}  range "
+          f"[{np.nanmin(within):+.4f}, {np.nanmax(within):+.4f}]  (low => same-class interpolants off-manifold)")
+    print(f"  within-class floor (FAIR, full graph): median {np.nanmedian(within_fair):+.4f}")
+    print(f"  --> P6 gap (fair within - cross): {np.nanmedian(within_fair) - np.nanmedian(cross):+.4f}  "
+          f"(should be >0 if class basins are resolved)")
     print(f"  route composition (4.1): filler={prov_filler:.2f} own-pair={prov_own:.2f} other-pair={prov_other:.2f}")
     print(f"  node R median (reference realistic level): {np.median(ns.R):+.4f}")
 
@@ -116,6 +120,8 @@ def main():
         "tau_cross_min": float(np.nanmin(cross)),
         "tau_cross_max": float(np.nanmax(cross)),
         "tau_within_median": float(np.nanmedian(within)),
+        "tau_within_fair_median": float(np.nanmedian(within_fair)),
+        "p6_gap_fair": float(np.nanmedian(within_fair) - np.nanmedian(cross)),
         "within_minus_cross": float(np.nanmedian(within) - np.nanmedian(cross)),
         "route_filler_frac": float(prov_filler),
         "route_own_pair_frac": float(prov_own),
@@ -139,6 +145,21 @@ def main():
               f"{fill['cross_median_no_filler']:+.4f} (no filler), delta={fill['delta']:+.4f}, "
               f"{fill['n_pairs_disconnected_no_filler']} pairs disconnected")
         (out_dir / "controls.json").write_text(json.dumps({"shuffled_R": null, "filler_removed": fill}, indent=2))
+
+    # --- P2: comparison graphs (is tau* just pixel/CLIP distance?) ---
+    if args.compare:
+        print("\nP2: comparison graphs (tau* vs cheap alternatives)...")
+        clip_ext = None
+        try:
+            from diffusiongraph.models.embeddings import ClipZeroShot
+            clip_ext = S.ClipFeatureExtractor(ClipZeroShot(device=device))
+        except Exception as e:
+            print(f"  (CLIP unavailable: {type(e).__name__}; G_pixel only)")
+        cmp = BG.comparison_graphs(ns, tau, clip_extractor=clip_ext)
+        for name, (G, rho) in cmp.items():
+            verdict = "tau* ~ this (adds nothing)" if abs(rho) > 0.9 else "distinct"
+            print(f"  Spearman(tau*, {name}) = {rho:+.3f}  -> {verdict}")
+        (out_dir / "compare.json").write_text(json.dumps({k: v[1] for k, v in cmp.items()}, indent=2))
 
     # --- EigenScore confirmation on the 45 bottleneck paths (design: decisive-validated) ---
     if args.confirm_eigenscore:
