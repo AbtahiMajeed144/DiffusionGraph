@@ -183,6 +183,34 @@ Output `results/barrier/tau/rtx5090/{tau.npy, eig_tau.npy, summary.json, control
 
 Half-scale earlier run (identical config, without `--controls/--compare`, `--n-perm` default): same τ* medians; shuffled-R 96th percentile at 50 perms; EigenScore confirm ρ = 0.269–0.445 across runs (EigenScore Monte-Carlo variance).
 
+### 6.6 Known defects of this τ* run (do not treat §6.3–6.5 as a validated result)
+
+These are established from the numbers above; they mean the τ* matrix in §6.3 carries no
+pairwise barrier information and rests on an unvalidated score.
+
+1. **τ* is degenerate: the printed matrix equals `min(f(A),f(B))`** with `f(bird,cat,dog)=−0.03`,
+   `f(else)=−0.02` (holds for all 45 entries at 2-decimal precision). This is a per-class
+   realism offset propagated through the min — ~10 numbers, not 45, i.e. **no pairwise
+   connectivity structure.** Full-precision test (added, `--degeneracy` prints inline):
+   Spearman(τ*, `min(f(A),f(B))`) with `f(A)` = median node R over class-A anchors+interpolants.
+2. **The shuffled-R null does not discriminate this.** Permuting R destroys the per-class
+   offsets, so `min(f(A),f(B))` exceeds the null by construction; the 97th-percentile
+   result (p≈0.03, single test) is consistent with a pure per-class offset and no barrier.
+   P3-fail and P5-"pass" both follow from τ* being near-constant.
+3. **τ* (−0.026) > G1 real (−0.041).** The bottleneck of the worst point on the route
+   scores as more on-manifold than real CIFAR test images — impossible for a correct R.
+   Max-min optimization selects nodes where feature-kNN over-estimates (near a bank image);
+   bottleneck optimization is adversarial against the estimator's max-error regions.
+4. **Realism score is unvalidated for this use.** τ* was built on **feature-kNN**, which
+   scored ~0.56 decisive on the G3 positive (§1.3, "near-OOD blind") and was **never
+   measured on G5**. §4 shows its sign is wrong on the near-OOD pair (slerp −0.0733 > blend
+   −0.0817). The EigenScore confirmation ρ = 0.27–0.55 means the two scores measure
+   materially different things, and the result-carrying one failed/was-untested at the gate.
+5. **P6 is within noise, not a pass.** Fair-within − cross = +0.0019 against IQR 0.0046.
+6. **Refinement did not converge** (§6.2): 6 rounds, path-edge counts 171→190, weights
+   still changing at the cap. τ* is an unconverged upper bound (refinement only lowers
+   weights → true τ* is below reported), and the whole spread is 0.015.
+
 ---
 
 ## 7. Reproduction

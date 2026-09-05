@@ -88,6 +88,10 @@ def main():
     ap.add_argument("--sigmas", default="0.5,1.0,2.0,4.0,8.0")
     ap.add_argument("--steps", type=int, default=18)
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--with-g5", action="store_true",
+                    help="also place G5 (linear class-condition midpoints, conditional ckpt) "
+                         "on the realism/in-pair frontier -- decides whether condition "
+                         "interpolation escapes the slerp XOR frontier")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -145,6 +149,26 @@ def main():
     d = _probe(_posterior(clf, g2, device), realism(g2)); d.pop("_realism", None)
     rows["G2_synth"] = d
 
+    # G5: linear class-condition midpoints on the SAME pairs (does it escape the frontier?)
+    g5_point = None
+    if args.with_g5:
+        from diffusiongraph.barrier.groups import condition_midpoints
+        cond_den = EDMDenoiser(cfg.edm_checkpoint_cond, device=device)
+        g5 = []
+        for i in range(0, len(pairs), 64):
+            g5.append(condition_midpoints(cond_den, pairs[i:i + 64], seed=args.seed + i,
+                                          decode_steps=args.steps, device=device))
+        g5 = torch.cat(g5, 0)
+        d = _probe(_posterior(clf, g5, device), realism(g5), ca, cb)
+        g5_point = (d["in_pair_frac"], d["realism_med"])
+        d.pop("_realism", None)
+        rows["G5_cond"] = d
+        del cond_den
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        print(f"  G5_cond   : realism={d['realism_med']:+.4f} in_pair={d['in_pair_frac']:.2f} "
+              f"third={d['third_class_frac']:.2f}")
+
     out_dir = RESULTS_DIR / "barrier" / "manifold" / args.profile
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "structure.json").write_text(json.dumps(rows, indent=2))
@@ -159,6 +183,13 @@ def main():
     ax.axhline(rows["G2_synth"]["realism_med"], ls="--", color="C0", lw=1, label="G2 synth realism")
     ax.axhline(rows["G4a_blend"]["realism_med"], ls=":", color="C3", lw=1, label="G4a blend realism")
     ax.axvline(rows["G1_real"]["in_pair_frac"], ls="--", color="C2", lw=0.8, alpha=0.6)
+    ax.scatter([rows["G4a_blend"]["in_pair_frac"]], [rows["G4a_blend"]["realism_med"]],
+               marker="X", s=90, color="C3", zorder=4, label="G4a blend")
+    ax.scatter([rows["G1_real"]["in_pair_frac"]], [rows["G1_real"]["realism_med"]],
+               marker="*", s=160, color="C2", zorder=4, label="G1 real")
+    if g5_point is not None:
+        ax.scatter([g5_point[0]], [g5_point[1]], marker="P", s=130, color="C4", zorder=5,
+                   label="G5 cond-midpoint")
     ax.set_xlabel("semantic locality to pair:  frac(argmax in {A,B})  -> 1 = stayed between the two classes")
     ax.set_ylabel("realism  (feature-kNN to real bank; higher = on-manifold)")
     ax.set_title("Between-class midpoints: realistic XOR in-pair\n"

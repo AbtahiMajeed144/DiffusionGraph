@@ -91,6 +91,44 @@ def main():
     print("Stage 3: barrier extraction...")
     tau, history, w = BG.barrier_matrix(ns, edges, realism_fn, delta=delta, refine=args.refine)
 
+    out_dir = RESULTS_DIR / "barrier" / "tau" / args.profile
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- DEGENERACY SELF-TEST: is tau*(A,B) just min(f(A),f(B))? ---
+    # f(A) = median node realism over class A's anchors + interpolants touching A.
+    from scipy.stats import spearmanr
+    iu0 = np.triu_indices(10, 1)
+    f = np.full(10, np.nan)
+    for A in range(10):
+        idx = [i for i in range(ns.images.shape[0])
+               if ns.anchor_class[i] == A or ns.provenance[i]["a"] == A or ns.provenance[i]["b"] == A]
+        if idx:
+            f[A] = float(np.median(ns.R[np.asarray(idx)]))
+    tau_hat = np.full((10, 10), np.nan)
+    for A in range(10):
+        for B in range(10):
+            if A != B:
+                tau_hat[A, B] = min(f[A], f[B])
+    m0 = ~np.isnan(tau[iu0]) & ~np.isnan(tau_hat[iu0])
+    rho_deg = spearmanr(tau[iu0][m0], tau_hat[iu0][m0]).correlation if m0.sum() > 2 else float("nan")
+    max_abs_resid = float(np.nanmax(np.abs(tau[iu0] - tau_hat[iu0]))) if m0.any() else float("nan")
+    # shared bottleneck edges across the 45 pairs
+    paths0 = BG._bottleneck_paths(ns, w)
+    edge_use = {}
+    for p in paths0.values():
+        for a, b in zip(p[:-1], p[1:]):
+            e = (a, b) if a < b else (b, a)
+            edge_use[e] = edge_use.get(e, 0) + 1
+    n_distinct_edges = len(edge_use)
+    top_edge_share = max(edge_use.values()) / max(1, len(paths0)) if edge_use else float("nan")
+    print(f"\nDEGENERACY: Spearman(tau*, min(f(A),f(B))) = {rho_deg:+.3f}  "
+          f"max|tau*-tau_hat| = {max_abs_resid:.4f}  (rho~1 => no pairwise content)")
+    print(f"  bottleneck edges: {n_distinct_edges} distinct across {len(paths0)} pairs; "
+          f"most-shared edge used by {top_edge_share:.0%} of pairs")
+    np.save(out_dir / "node_R.npy", ns.R)
+    np.save(out_dir / "f_per_class.npy", f)
+    np.save(out_dir / "tau.npy", tau)
+
     # design 5.1: within-class floor (restricted + fair); 4.1: route provenance
     within = BG.within_class_floor(ns, w, fair=False)
     within_fair = BG.within_class_floor(ns, w, fair=True)
@@ -110,9 +148,6 @@ def main():
     print(f"  route composition (4.1): filler={prov_filler:.2f} own-pair={prov_own:.2f} other-pair={prov_other:.2f}")
     print(f"  node R median (reference realistic level): {np.median(ns.R):+.4f}")
 
-    out_dir = RESULTS_DIR / "barrier" / "tau" / args.profile
-    out_dir.mkdir(parents=True, exist_ok=True)
-    np.save(out_dir / "tau.npy", tau)
     (out_dir / "summary.json").write_text(json.dumps({
         "n_nodes": int(ns.images.shape[0]),
         "R_median": float(np.median(ns.R)),
@@ -126,6 +161,10 @@ def main():
         "route_filler_frac": float(prov_filler),
         "route_own_pair_frac": float(prov_own),
         "route_other_pair_frac": float(prov_other),
+        "degeneracy_spearman_min_f": float(rho_deg),
+        "degeneracy_max_abs_resid": float(max_abs_resid),
+        "n_distinct_bottleneck_edges": int(n_distinct_edges),
+        "top_bottleneck_edge_share": float(top_edge_share),
         "n_rounds": len(history),
         "interp_sigmas": args.interp_sigmas,
     }, indent=2))
