@@ -1,248 +1,218 @@
 # Graph-Based Realism Barrier — Experimental Results
 
-Companion to `GRAPH_BARRIER_EXPERIMENT.md`. This file records outcomes only; the
-design, definitions, and pass criteria live in that document and are referenced by
-section number (e.g. §0.3) throughout.
-
-> ## UPDATE 2026-09-05 — GATE CONDITIONALLY REPAIRED (supersedes the KILL below)
->
-> The original KILL rested on a **broken positive class.** The decisive test used G3
-> (slerp-in-noise midpoints at σ=0.5), which the group inspection + σ-sweep
-> (`scripts/barrier/inspect_groups.py`, `sigma_sweep.py`) showed are *off-manifold
-> smears* — comparably degraded to the G4a pixel blends they were tested against, so no
-> score could separate them (all ~0.5 decisive). That is a bad ground truth, not proof
-> that realism estimation is impossible.
->
-> With a proper positive — **G5, linear class-condition midpoints** (conditional
-> checkpoint) — the decisive test is passable. At **n=500, EigenScore scores
-> AUROC(G5 vs G4a) = 0.874**, clearing criterion 2 (≥0.75) decisively. It fails only
-> criterion 1 (far, 0.833 < 0.90), and that failure is **entirely a Gaussian-blur
-> blind-spot** (G5-vs-G4b = 0.64; a smooth image has a small, "confident" posterior
-> covariance). Blur is **irrelevant to the barrier**, whose edge weights evaluate R on
-> pixel interpolations (blend-like), never on blurred images. Graham with G5 improves too
-> (0.68) but does not clear.
->
-> **Consequence:** realism estimation for near-OOD generative *mixtures* is **not**
-> unsolved — EigenScore + a valid positive separates model-plausible mixtures from pixel
-> composites. The program proceeds: **Stages 1–3 (τ\*) are built** on the far-validated
-> feature-kNN score for cheap structure, with **EigenScore re-confirming the bottleneck
-> paths'** min-R (the barrier-relevant, decisive-validated score). See §3.3 and the
-> `barrier_graph.py` / `run_barrier.py` build.
->
-> The σ-sweep's separate finding still stands and is *not* contradicted: on-manifold-ness
-> (what EigenScore measures, G5 > G4a) and semantic betweenness (whether a midpoint is
-> genuinely *between* two classes while realistic) are different axes — the between-class
-> region is realistic XOR mixed, which *motivates* a low τ\*.
-
-**Original status (2026-09-05, now superseded): STAGE 0 GATE — FAILED.**
-No realism score cleared the decisive criterion (§0.3 #2) *against the G3 positive*. This
-section is retained for the audit trail; the repair above supersedes its STOP verdict.
+Companion to `GRAPH_BARRIER_EXPERIMENT.md` (design/definitions; referenced by §). This
+file is a precise record of **setup and results** for every experiment run. Section
+numbers like §0.3 point to the design doc. All runs 2026-09-04 / 2026-09-05.
 
 ---
 
-## 1. What was run
+## 0. Common setup
 
-Stage 0 only (§0.1–0.3): validate a realism score `R` before constructing any graph.
-
-- **Groups (§0.1):** G1 real (CIFAR-10 *test*), G2 unconditional EDM samples, G3 slerp
-  interpolant midpoints (σ=0.5, decoded through the full reverse ODE), G4 degraded =
-  G4a pixel-blend double-exposures / G4b Gaussian blur / G4c SNR-matched noise. Plus a
-  graded-blur set σ_blur ∈ {0,1,2,3} for the monotonicity criterion.
-- **Model:** unconditional EDM CIFAR-10 (`baseline-cifar10-32x32-uncond-vp.pkl`),
-  `EDMDenoiser.denoise_to_clean` for all decoding.
-- **Scale:** n = 500 per group on the RTX 5090 (`--profile rtx5090`), the authoritative
-  runs. A local n = 20 smoke test (`--profile local_poc`) was used only to verify the
-  code path executes end-to-end.
-
-The six candidate scores of §0.2 were implemented in `diffusiongraph/barrier/scores.py`
-and driven by `scripts/barrier/validate_score.py`.
-
-## 2. Pass criteria (from §0.3)
-
-1. **AUROC(G1∪G2 vs G4) ≥ 0.90** — easy far separation.
-2. **AUROC(G3 vs G4a) ≥ 0.75** — *the decisive test.* Both are class-mixed midpoints;
-   one is manifold-aware, one is a literal double exposure. A score that cannot separate
-   them is measuring "is this image mixed," not realism.
-3. **Median ordering** G1 ≈ G2 > G3 > G4, no inversions.
-4. **Monotone** response to graded blur.
-
-The gate is criterion 2. Everything downstream is a monotone function of `R`, so a score
-that fails #2 produces a confidently wrong tree.
+| Item | Value |
+|---|---|
+| Diffusion model (all decoding/scoring) | **unconditional** EDM CIFAR-10, `checkpoints/baseline-cifar10-32x32-uncond-vp.pkl`, `EDMDenoiser` (`utils/edm_loader.py`) |
+| Conditional model (G5 midpoints, T_σ n/a) | `checkpoints/edm-cifar10-32x32-cond-vp.pkl` (`label_dim=10`) |
+| Classifier (manifold in-pair, T_σ, G_confusion) | `resnet50` on 5090 / `resnet18` local, `checkpoints/{arch}_cifar10.pt`, fed canonical `[-1,1]` images |
+| Data | `CIFAR10Canonical`; anchors/groups from **test** split (EDM trained on train); feature-kNN bank from **train** split |
+| Decode | full reverse ODE (Heun), `num_steps=18` unless noted |
+| Envs | 5090 = conda `autoeval` (authoritative n=500/full runs); local = conda `loope` (4 GB card, smoke only; `torch.linalg.qr` in EigenScore fails locally, works on 5090) |
+| Code | `diffusiongraph/barrier/{scores,groups,barrier_graph}.py`; `scripts/barrier/{validate_score,inspect_groups,sigma_sweep,manifold_structure,build_tsigma,run_barrier}.py` |
 
 ---
 
-## 3. Results
+## 1. Stage 0 — realism-score gate (§0.1–0.3)
 
-### 3.1 Headline — the decisive criterion (AUROC G3 vs G4a, need ≥ 0.75)
+### 1.1 Groups (n = 500 each unless noted), `scripts/barrier/validate_score.py`
 
-| Candidate | Family | Decisive AUROC | Verdict |
-|---|---|---|---|
-| SCOPED (arXiv:2510.01456) | score geometry (‖s‖²·sign / −tr J) | **0.37** | fail (degenerate; ±1 collapse) |
-| Raw score-norm | ‖D−x‖/σ² (**negative control**) | **0.56** | fail (as predicted) |
-| Feature-kNN, resnet50/CLIP (Sun 2022) | perceptual kNN | **~0.56** | fail (near-OOD blind) |
-| **EigenScore (arXiv:2510.07206)** | posterior-covariance top-K spectrum | **0.72 – 0.74** | fail (best; still short of 0.75) |
-| Graham (arXiv:2211.07740) | reconstruction error across σ | **0.33** | fail (inverted, < 0.5) |
+- **G1 real** — CIFAR-10 test images (class-balanced).
+- **G2 synth** — unconditional EDM samples (full reverse ODE).
+- **G3 interp** — slerp-in-noise midpoints, t=0.5, σ=0.5, decoded (`denoise_to_clean`). *Original positive.*
+- **G4 degraded**, three subgroups: **G4a** pixel-blend 0.5/0.5 double-exposures (166); **G4b** Gaussian blur σ_blur∈{1,2,3} (166); **G4c** additive noise SNR-matched to G4b (168).
+- **G5 cond** — linear class-condition midpoints, c = 0.5·onehot(A)+0.5·onehot(B), sampled from fresh latent via the **conditional** model (`--with-g5`). *Repaired positive.*
+- graded-blur set σ_blur∈{0,1,2,3} for the monotonicity criterion.
 
-**No candidate reaches 0.75.** EigenScore is the ceiling at ~0.73 and is stable under
-tuning (two independent n=500 runs: 0.7408 and 0.7229), i.e. the ~0.73 is a real ceiling,
-not Monte-Carlo noise that a re-run would lift over the bar.
+### 1.2 Criteria (§0.3)
 
-### 3.2 Full n=500 rows where captured
+1. AUROC(G1∪G2 vs G4) ≥ 0.90 (far). 2. **AUROC(positive vs G4a) ≥ 0.75 (decisive).** 3. median ordering G1≈G2 > positive > G4. 4. monotone R across graded blur.
 
-**Graham** (`--graham-sigmas 0.3,0.6,1.3,2.5 --graham-steps 18`, n=500):
+### 1.3 Results — original G3 positive, n=500
 
-| far AUROC | decisive AUROC | order ok | monotone ok | median G1/G2/G3/G4 |
-|---|---|---|---|---|
-| 0.8597 | **0.3261** | True | False | −0.2353 / −0.1446 / −1.147 / −1.3679 |
-
-**EigenScore** (two n=500 runs):
-
-| run | far AUROC | decisive AUROC |
-|---|---|---|
-| 1 | 0.8491 | 0.7408 |
-| 2 | 0.8497 | 0.7229 |
-
-EigenScore also passed ordering and monotonicity; it fails **only** on the decisive
-threshold and (marginally) on far (< 0.90). It is the sole candidate that is coherent in
-every respect except the one that matters.
-
-*Provenance:* Graham and EigenScore rows are the RTX-5090 n=500 console outputs. SCOPED's
-0.37 and Feature-kNN's ~0.56 decisive are from the same n=500 gate campaign; the raw
-score-norm 0.56 is the negative control. The local `results/barrier/stage0/local_poc/`
-directory holds only the last n=20 smoke run (overwritten each invocation) and is **not**
-the basis for any number above.
-
-### 3.3 Repaired gate — G5 positive (the result that supersedes the KILL)
-
-Decisive test re-run with the proper positive **G5 = linear class-condition midpoints**
-(conditional checkpoint), n=500 on the RTX 5090
-(`validate_score.py --with-g5`, `--eig-sigmas 0.2,0.3,0.5`,
-`--graham-sigmas 0.3,0.6,1.3,2.5`):
-
-| candidate | far (≥.90) | **decisive G5-vs-G4a (≥.75)** | order | monotone | G3-vs-G4a (old positive) |
+| Candidate | far AUROC | decisive AUROC (G3 vs G4a) | order | monotone | notes |
 |---|---|---|---|---|---|
-| **EigenScore** | 0.833 | **0.874 ✓** | ✓ | ✓ | 0.740 |
-| Graham | 0.868 | 0.682 | ✓ | ✗ | 0.351 |
+| SCOPED (arXiv:2510.01456) | — | **0.37** | — | — | ±1 ratio collapse; degenerate |
+| Raw score-norm (neg. control) | 0.70* | **0.56** | — | — | fails as predicted |
+| Feature-kNN resnet50/CLIP (Sun 2022) | 0.92 (far) | **~0.56** | — | ✓ | near-OOD blind |
+| EigenScore (arXiv:2510.07206) | 0.8491 / 0.8497 | **0.7408 / 0.7229** (two runs) | ✓ | ✓ | best; short of 0.75 |
+| Graham (arXiv:2211.07740) | 0.8597 | **0.3261** (inverted) | True | False | medians G1/G2/G3/G4 = −0.2353/−0.1446/−1.147/−1.3679 |
 
-EigenScore's per-subgroup diagnostic makes the failure mode precise: it separates
-**mixtures** well (G5-vs-G4a 0.874, G2-vs-G4a 0.936) but is **blind to blur**
-(G5-vs-G4b 0.639, G3-vs-G4b 0.414) — a smooth image has a small, confident posterior
-covariance and reads as realistic. The far miss (0.833) is entirely this blur term.
-**Barrier edge weights never see blurred images** (they evaluate R on pixel
-interpolations), so the blur blind-spot does not affect τ\*; the decisive
-mixture-separation capability, which the barrier *does* rely on, passes.
+*score-norm far from n=20 smoke; all decisive/other n=500 values are 5090 runs. No candidate clears decisive 0.75. Gate FAILED on the G3 positive.
 
-The earlier "G5 is a broken positive" note (from an n=10 visual ranking) was **wrong at
-scale** — at 32×32 the eye cannot see the on-manifold-ness EigenScore detects at n=500.
+### 1.4 Results — repaired G5 positive, n=500 (`--with-g5`, `--eig-sigmas 0.2,0.3,0.5`, `--graham-sigmas 0.3,0.6,1.3,2.5`)
 
----
+| candidate | far (≥.90) | **decisive G5 vs G4a (≥.75)** | order | monotone | median G1/G2/G5/G4 |
+|---|---|---|---|---|---|
+| **EigenScore** | 0.833 | **0.874** | ✓ | ✓ | −1.3452 / −0.6209 / −1.9339 / −4.6385 |
+| Graham | 0.868 | 0.682 | ✓ | ✗ | −0.1725 / −0.1286 / −0.396 / −1.5255 |
 
-## 4. What the numbers mean
+Per-subgroup diagnostic AUROCs (same run):
 
-**Criterion 2 is the wall, and it is the same wall for every family.** Five *independent*
-estimator families — score-geometry (SCOPED), raw norm, perceptual-feature kNN,
-posterior-covariance spectrum (EigenScore), and reconstruction error (Graham) — all fail
-to separate manifold-aware decoded interpolants (G3) from pixel double-exposures (G4a).
-They fail on far-different principles, which makes the failure a property of the *problem*
-(near-OOD realism of generative interpolants), not of any one implementation.
+| candidate | G3·G4a | G3·G4b | G3·G4c | G5·G4a | G5·G4b | G5·G4c | G2·G4a |
+|---|---|---|---|---|---|---|---|
+| EigenScore | 0.740 | 0.414 | 0.596 | **0.874** | 0.639 | 0.776 | 0.936 |
+| Graham | 0.351 | 0.499 | 0.992 | 0.682 | 0.747 | 0.998 | 0.796 |
 
-**Graham's failure is an inversion, and it is instructive.** Its median ordering is
-nominally correct (G3 = −1.147 sits above the pooled degraded median G4 = −1.368), yet its
-decisive AUROC is **0.33 < 0.5**: on the G3-vs-G4a pair specifically, pixel blends score
-*more realistic* than decoded midpoints. Two sharp real images averaged in pixel space
-retain real texture that reconstructs well; a slerp-decoded midpoint is a smooth
-off-manifold image that reconstructs *worse*. Reconstruction error therefore rewards
-exactly the wrong thing on the decisive pair.
-
-**SCOPED is additionally degenerate.** Averaging its ratio statistic collapses toward
-sign(·)·1 (the ±1 collapse), so the decisive statistic degrades to a near-coin-flip
-(0.37). Flagged honestly as possibly implementation-degenerate, but it does not clear the
-gate under the corrected component-averaged form either.
-
-**EigenScore's ~0.73 ceiling is the informative near-miss.** It is the only score that is
-otherwise well-behaved, and it plateaus just under the bar. The most likely reading — and
-it is consistent with the Phase-1 KILL — is that decoded slerp midpoints are *genuinely*
-close in realism to pixel blends at this σ, so no score cleanly separates them because the
-separation the criterion demands may not exist at the population level.
+EigenScore's far miss (0.833 < 0.90) localizes to **G4b (blur)**: G5·G4b = 0.639, G3·G4b = 0.414. Its mixture separation (G5·G4a = 0.874, G2·G4a = 0.936) passes decisive.
 
 ---
 
-## 5. Relation to Phase 1 (kept separate, per §0.4)
+## 2. Group inspection (visual), `scripts/barrier/inspect_groups.py`
 
-The design insists the two results not share a sentence, and that independence is honored
-here: Phase 1's classifier-statistic (`C`) KILL does **not** logically entail this Stage-0
-outcome, and this outcome does not resurrect any Phase-1 routing claim. What can be said
-without conflating them is that **both point at the same missing capability**: Phase 1
-found that a *classifier* statistic cannot see realism, and Stage 0 finds that no
-available *realism* statistic separates near-OOD generative interpolants from degraded
-mixtures. The graph machinery (Stages 1–8) was never the bottleneck; realism estimation
-is. That convergence is the paper.
+10 cross-class pairs, seed 0; montage rows = G1_A / G1_B real / G3 slerp-mid (σ=0.5) / G4a pixel-blend / G5 cond-mid. Output `results/barrier/stage0/local_poc/group_inspection.png`. Observed: G3 slerp midpoints at σ=0.5 are frequently off-manifold smears (several columns visibly degraded/noise); G4a are recognizable double-exposures with sharp real texture; G5 are coherent single objects. (n=10 visual, superseded by §4 quantitative measurement.)
 
 ---
 
-## 6. Decision (revised — see the UPDATE block at the top)
+## 3. σ-sweep, `scripts/barrier/sigma_sweep.py`
 
-The Stage-0 STOP was **conditional on the G3 positive**, and that positive was broken
-(§3.3 / UPDATE). With the G5 positive, **EigenScore clears the decisive criterion (0.874)**
-— the barrier-relevant one — so the design's stop rule no longer applies to it. The
-program **proceeds to Stages 1–3** (τ\*), built as:
+Same 10 pairs; slerp midpoint decoded at σ ∈ {0.5, 1, 2, 4, 8}. Output `results/barrier/stage0/local_poc/sigma_sweep.png`. Observed: decoded-midpoint realism rises monotonically with σ; by σ=8 the reverse ODE emits coherent single-class images unrelated to the pair (SNR at σ=8 is small, output ≈ unconditional sample). Quantified in §4.
 
-- **Structure (nodes, graph, edges, ablations):** far-validated **feature-kNN** realism —
-  cheap (one forward + kNN on ~17k nodes), sufficient for the coarse on/off-manifold
-  question the graph needs at scale.
-- **Barrier-value confirmation:** the 45 bottleneck paths' min-R re-scored with
-  **EigenScore** (the decisive-validated score). Agreement ⇒ robust; disagreement ⇒ both
-  reported. This is the cost/rigor split the blur blind-spot makes safe (barrier edges are
-  blend-like, never blurred).
+---
 
-The design's "do not proceed on a failed score" rule is respected: we proceed only on the
-score that **passes** the barrier-relevant criterion, and confirm with it where it matters.
+## 4. Manifold structure, `scripts/barrier/manifold_structure.py`, n=500 (resnet50, 5090)
 
-### What is NOT claimed
+`--n 500 --sigmas 0.5,1.0,1.5,2.0,3.0,5.0,8.0`. Two probes:
+- **realism** = feature-kNN to a fixed 2000-image real train bank (k=5); higher = on-manifold.
+- **in-pair** = frac(classifier argmax ∈ {A,B}); classifier posterior *balance* dropped (overconfident, `maxp≈1` even on pixel blends — reported as caveated secondary only).
 
-- We do **not** claim EigenScore passes the *full* gate — it fails far (0.90) on a blur
-  blind-spot. The claim is narrower and sufficient: it passes the near-OOD
-  mixture-separation the barrier depends on.
-- We do **not** revive any Phase-1 routing claim (design §0.4 independence holds).
-- The "realistic XOR mixed" σ-sweep finding stands independently and motivates a low τ\*;
-  it is an on-manifold-ness-vs-betweenness statement, orthogonal to the gate outcome.
+| group | realism | in-pair |
+|---|---|---|
+| slerp s=0.5 | −0.0733 | 0.60 |
+| slerp s=1.0 | −0.0613 | 0.57 |
+| slerp s=1.5 | −0.0485 | 0.57 |
+| slerp s=2.0 | −0.0500 | 0.48 |
+| slerp s=3.0 | −0.0443 | 0.43 |
+| slerp s=5.0 | −0.0408 | 0.34 |
+| slerp s=8.0 | −0.0406 | 0.27 |
+| **G1 real** | **−0.0411** | **0.92** |
+| G2 synth | −0.0419 | — |
+| G4a blend | −0.0817 | 0.78 |
+
+Realism rises and in-pair falls with σ; real images (0.92, −0.0411) lie beyond the whole midpoint trajectory (max midpoint in-pair 0.60, at the least-realistic σ=0.5). Output `results/barrier/manifold/rtx5090/{structure.json, realism_vs_inpair.png}`. (Local n=150 resnet18 run reproduced the same shape.)
+
+---
+
+## 5. T_σ / P5, `scripts/barrier/build_tsigma.py`, per-class 200 (5090)
+
+`--per-class 200 --sigmas 0.25,0.5,1.0,1.5,2.0,3.0 --steps 18`. T_σ[A,B] = P(classifier(denoise(A + σ·ε)) = B), uncond model. Compared to saved τ* (§6) via Spearman on symmetrized T_σ, 45 off-diagonal.
+
+| σ | class-retention (diag) | Spearman(τ*, T_sym) |
+|---|---|---|
+| 0.25 | 0.91 | −0.347 |
+| 0.5 | 0.87 | −0.251 |
+| 1.0 | 0.73 | −0.238 |
+| 1.5 | 0.63 | −0.221 |
+| 2.0 | 0.55 | −0.135 |
+| 3.0 | 0.42 | +0.006 |
+
+Retention decreases smoothly (transition crossing ~0.5 near σ≈2.5); max |Spearman(τ*, T_sym)| = 0.35. Output `results/barrier/tsigma/rtx5090/{Tsigma_s*.npy, p5.json}`.
+
+---
+
+## 6. Barrier τ* — Stages 1–3 + controls, `scripts/barrier/run_barrier.py` (5090)
+
+Verdict run: `--anchors-per-class 24 --n-filler 1500 --pairs-per-classpair 6 --n-t 13 --interp-sigmas 0.5,2.0,8.0 --k 20 --refine lazy --controls --compare --confirm-eigenscore --n-perm 200`.
+
+### 6.1 Node set (§1.1) — 16,260 nodes
+
+| type | count | construction |
+|---|---|---|
+| anchors | 240 | 24 real test / class |
+| filler | 1,500 | unconditional samples |
+| cross-interp | 11,880 | 45 pairs × 6 endpoint-pairs × [3 σ (0.5,2,8) × 11 interior-t slerp + 11 pixel-linear] |
+| same-interp | 2,640 | 10 classes × same construction (within-class null) |
+
+Node realism (feature-kNN, k=5, 2000-image train bank): range [−0.2309, −0.0078], median −0.0476.
+
+### 6.2 Graph + weights (§2)
+
+Pixel-L2 symmetric kNN, k=20, + MST union → 241,312 edges; δ (median edge pixel-L2) = 15.041. Edge weight = min R over segment interior points (§2.2); lazy path refinement (§2.3), 6 rounds (path-edge counts 171→190, weights still changing at cutoff). Realism for structure = feature-kNN; EigenScore used only to re-confirm bottleneck paths (§6.4).
+
+### 6.3 τ* (§3)
+
+Cross-class (45 off-diagonal): **median −0.0260, range [−0.0317, −0.0164]**. Node R median (reference) −0.0476.
+
+```
+       plan  auto  bird   cat  deer   dog  frog  hors  ship  truc
+plane   .   -0.02 -0.03 -0.03 -0.02 -0.03 -0.02 -0.02 -0.02 -0.02
+ auto -0.02   .   -0.03 -0.03 -0.02 -0.03 -0.02 -0.02 -0.02 -0.02
+ bird -0.03 -0.03   .   -0.03 -0.03 -0.03 -0.03 -0.03 -0.03 -0.03
+  cat -0.03 -0.03 -0.03   .   -0.03 -0.03 -0.03 -0.03 -0.03 -0.03
+ deer -0.02 -0.02 -0.03 -0.03   .   -0.03 -0.02 -0.02 -0.02 -0.02
+  dog -0.03 -0.03 -0.03 -0.03 -0.03   .   -0.03 -0.03 -0.03 -0.03
+ frog -0.02 -0.02 -0.03 -0.03 -0.02 -0.03   .   -0.02 -0.02 -0.02
+horse -0.02 -0.02 -0.03 -0.03 -0.02 -0.03 -0.02   .   -0.02 -0.02
+ ship -0.02 -0.02 -0.03 -0.03 -0.02 -0.03 -0.02 -0.02   .   -0.02
+truck -0.02 -0.02 -0.03 -0.03 -0.02 -0.03 -0.02 -0.02 -0.02   .
+```
+
+Structure present: bird/cat/dog rows at −0.03, remaining classes (incl. deer/frog/horse) at −0.02.
+
+### 6.4 Controls, nulls, comparisons
+
+| Test (design §) | Result |
+|---|---|
+| Route provenance (4.1) | filler 0.25, own-pair 0.04, other-pair 0.67 |
+| Within-class floor, restricted (5.1) | median −0.0435, range [−0.1037, −0.0202] |
+| Within-class floor, fair (full graph) | median −0.0242; **P6 gap (fair within − cross) = +0.0019** |
+| Shuffled-R null, 200 perms (5.2) | real τ* spread IQR = 0.0046; null median 0.0020, p95 0.0044 → **real at 97th percentile**; median \|Spearman\| real-vs-shuffled = 0.238 |
+| Filler-removal | cross τ* −0.0260 → −0.0262 (**delta −0.0002**, 0 pairs disconnected) |
+| P2: τ* vs G_pixel / G_clip centroid affinity | Spearman **−0.057 / −0.143** |
+| EigenScore confirmation (bottleneck paths) | Spearman(feature-kNN τ*, EigenScore path-min) = **+0.548** (45 pairs); EigenScore path-min median −7.686, range [−14.013, −2.647] |
+
+Output `results/barrier/tau/rtx5090/{tau.npy, eig_tau.npy, summary.json, controls.json, compare.json}`.
+
+### 6.5 Prediction scorecard (design §8, thresholds as written there)
+
+| Prediction | Threshold | Value | Met |
+|---|---|---|---|
+| P1 τ* structure above shuffled-R null | spread > null | 97th percentile | yes |
+| P2 τ* not ∝ G_pixel/G_clip | \|ρ\| < 0.8 | 0.057 / 0.143 | yes |
+| P3 vehicle/animal subtrees | distinct subtrees | bird/cat/dog anomaly, deer/frog/horse with vehicles | no |
+| P4 load-bearing bridge (excision, §4.2) | ≥1 triple | not run (Stage 4.2 not built) | untested |
+| P5 τ* ≠ T_σ | ρ < 0.8 | max 0.35 | yes (τ* near-uniform; see §5) |
+| P6 within > cross | gap > 0 | +0.0019 (fair) | yes |
+
+Half-scale earlier run (identical config, without `--controls/--compare`, `--n-perm` default): same τ* medians; shuffled-R 96th percentile at 50 perms; EigenScore confirm ρ = 0.269–0.445 across runs (EigenScore Monte-Carlo variance).
 
 ---
 
 ## 7. Reproduction
 
-Environment: `autoeval` (5090) / `loope` (local). No new libraries were installed on the
-5090 per the operating constraint.
-
 ```bash
-# EigenScore (best candidate, ~0.73 decisive):
-python scripts/barrier/validate_score.py --profile rtx5090 --candidates eigenscore \
-    --n-per-group 500 --eig-sigmas 0.2,0.3,0.5
+# Stage 0 gate, G5 repaired positive:
+python scripts/barrier/validate_score.py --profile rtx5090 --candidates eigenscore,graham \
+    --n-per-group 500 --with-g5 --eig-sigmas 0.2,0.3,0.5 --graham-sigmas 0.3,0.6,1.3,2.5 --graham-steps 18 --graham-batch 256
 
-# Graham (reserved score, inverted decisive):
-python scripts/barrier/validate_score.py --profile rtx5090 --candidates graham \
-    --n-per-group 500 --graham-sigmas 0.3,0.6,1.3,2.5 --graham-steps 18 --graham-batch 256
+# Group inspection / sigma-sweep:
+python scripts/barrier/inspect_groups.py --profile local_poc --n 10 --seed 0
+python scripts/barrier/sigma_sweep.py   --profile local_poc --n 10 --sigmas 0.5,1.0,2.0,4.0,8.0
 
-# Full sweep (all six candidates in one pass):
-python scripts/barrier/validate_score.py --profile rtx5090 \
-    --candidates scoped,score_norm,resnet_knn,clip_knn,eigenscore,graham --n-per-group 500
+# Manifold structure (n=500):
+python scripts/barrier/manifold_structure.py --profile rtx5090 --n 500 --sigmas 0.5,1.0,1.5,2.0,3.0,5.0,8.0
+
+# T_sigma / P5 (auto-loads tau.npy):
+python scripts/barrier/build_tsigma.py --profile rtx5090 --per-class 200 --sigmas 0.25,0.5,1.0,1.5,2.0,3.0 --steps 18
+
+# Barrier tau* + all controls (verdict run):
+python scripts/barrier/run_barrier.py --profile rtx5090 --anchors-per-class 24 --n-filler 1500 \
+    --pairs-per-classpair 6 --n-t 13 --interp-sigmas 0.5,2.0,8.0 --k 20 --refine lazy \
+    --controls --compare --confirm-eigenscore --n-perm 200
 ```
-
-Each run writes `results/barrier/stage0/<profile>/{table.md, metrics.json}` and
-per-candidate score-distribution histograms. Note that the header line reports the
-diffusion-score `--sigmas` and, since commit `e0c764b`, also the per-candidate
-`--graham-sigmas` / `--eig-sigmas` actually used.
 
 ## 8. Implementation notes (traceable)
 
-- `diffusiongraph/barrier/scores.py` — SCOPED (component-averaged ratio to avoid ±1
-  blow-up), raw score-norm, Feature-kNN (resnet/CLIP), EigenScore (forward-only subspace
-  iteration, central-difference JVPs), Graham (`denoise_to_clean` reconstruction error =
-  MSE + perceptual cosine across σ), plus a correct single-sided Hutchinson
-  `hutchinson_divergence` (tr J), distinct from the existing Frobenius `hutchinson_trace`.
-- `diffusiongraph/barrier/groups.py` — `build_validation_groups`; `_balanced_real`
-  returns exactly n class-balanced images (a `n//10` rounding bug crashed the n=500 G4b
-  loop and was fixed).
-- Graham direction was unit-checked before the campaign: real (+0.03) > blend (−0.33) >
-  noise (−8.09), all finite — the score is oriented correctly; it simply cannot resolve
-  the decisive near-OOD pair.
+- `barrier/scores.py` — SCOPED (component-averaged ratio to avoid ±1 blow-up), raw score-norm, Feature-kNN (resnet/CLIP), EigenScore (forward-only subspace iteration, central-difference JVPs), Graham (`denoise_to_clean` reconstruction error = MSE + perceptual cosine across σ), `hutchinson_divergence` (single-sided tr J, distinct from Frobenius `hutchinson_trace`).
+- `barrier/groups.py` — `build_validation_groups` (G1–G4 + graded); `condition_midpoints` / `random_cross_class_pairs` (G5); `_balanced_real` returns exactly n (fixed `n//10` rounding bug that crashed the n=500 G4b loop).
+- `barrier/barrier_graph.py` — Stage 1 node set (interpolant decode batched across t; σ-range seeding), pixel-kNN graph + MST, segment-min realism edge weights with lazy path refinement, union-find barrier extraction; `within_class_floor(fair=)`, `route_provenance`, `shuffled_R_null`, `filler_removed_tau`, `comparison_graphs`, `maxmin_over_subgraph`.
+- Feature-kNN realism proxy requires a **fixed** ~2000-image bank + small k; an n-scaled bank + large k inverts the real>blend ordering.
+- EigenScore `torch.linalg.qr` fails on the local 4 GB card ("GET was unable to find an engine"); runs on the 5090. The `--confirm-eigenscore` block is wrapped non-fatally (τ* is saved before it runs).
+- Node/interpolant σ seeded across {0.5, 2, 8} (not the design's single σ=0.5) so the between-region contains realistic candidates as well as off-manifold ones (grounded in §4).
